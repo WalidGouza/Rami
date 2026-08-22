@@ -15,13 +15,13 @@
 
 ## What is this?
 
-`index.html` is a complete, self-contained implementation of **Rami**, the two-deck
+`rami.html` is a complete, self-contained implementation of **Rami**, the two-deck
 rummy game popular across North Africa and the Middle East. Open the file in any
 browser and play — locally, hotseat-style, with 2 to 7 players, any mix of humans
 and bot opponents.
 
 Everything — game logic, styling, and even the app icons — lives inside the single
-`index.html` file, so it can be shared, downloaded, or hosted as-is.
+`rami.html` file, so it can be shared, downloaded, or hosted as-is.
 
 ## Features
 
@@ -42,52 +42,82 @@ Everything — game logic, styling, and even the app icons — lives inside the 
 
 No installation required.
 
-1. Download `index.html`.
+1. Download `rami.html`.
 2. Open it in any modern browser (Chrome, Safari, Firefox, Edge).
 3. Choose the number of players, set the points target, name each seat, tick "Bot-controlled" for any seat you want the computer to play, and deal.
 
 ### Installing it as an app
 
-- **Desktop (Chrome/Edge):** open `index.html`, then use the browser's "Install app" / "Create shortcut" option. The card icon will show up as the app icon.
+- **Desktop (Chrome/Edge):** open `rami.html`, then use the browser's "Install app" / "Create shortcut" option. The card icon will show up as the app icon.
 - **Mobile (iOS/Android):** open the file in your browser, then use "Add to Home Screen." It will launch full-screen with its own icon, using the embedded manifest and touch icon.
 
 ## Table settings
 
 Set these before dealing:
 
-- **Allow drawing from discard** — off by default. Off means the original rule: only the player right after the dealer may freely draw the very first discard (the tournante); after that the pile locks, though any player may still pick it up later purely to win on the spot (see "Winning off the discard" below). Turned on, the discard pile behaves like a second stock for the whole game — on your turn you simply choose to draw from the stock or from the top of the discard pile, no restriction, just like classic rummy.
+- **Allow drawing from discard** — off by default. Off means the original rule: only the player right after the dealer may freely draw the very first discard (the tournante); after that the pile locks (in Complet mode, any player may still pick it up later purely to win on the spot — see below). Turned on, the discard pile behaves like a second stock for the whole game — on your turn you simply choose to draw from the stock or from the top of the discard pile, no restriction, just like classic rummy.
 - **Hand size** — 14 cards per player (dealer gets 15) by default, or 13 (dealer gets 14).
 - **Jokers** — included by default (108-card double deck); turn off to play with a pure 104-card double deck and no jokers at all.
-- **Game mode** — **Complet** (the default, and the only mode currently implemented): arrange your whole hand and finish all at once, as described below. **71** is listed as a second mode for a points-based variant (reach 71+ using card values) but isn't implemented yet — selecting it still plays a normal Complet game for now.
+- **Game mode** — **Complet** (the default): arrange your whole hand and finish all at once, as described below. **71**: open the table with 71+ joker-free points, then whittle your hand down by laying off cards over several turns.
 
-## How to play
+## How to play — Complet mode
 
 Each player is dealt 14 cards; the dealer gets 15.
 
 1. The dealer opens the round by discarding one card face up — the **tournante**.
-2. Only the player immediately after the dealer may draw that tournante for free, instead of drawing from the stock. After that, the discard pile locks: no more free draws from it.
+2. Only the player immediately after the dealer may draw that tournante for free, instead of drawing from the stock. After that, the discard pile locks: no more free draws from it (unless "Allow drawing from discard" is turned on).
 3. On your turn: draw a card, then arrange your hand.
    - Drag cards to reorder them, or group them into melds.
-   - **Suivie** — 3 or more consecutive cards, all the same suit.
+   - **Suivie** — 3 or more consecutive cards, all the same suit. Ace can sit at either end (A-2-3… or …Q-K-A), but never wraps around through K-A-2.
    - **Trio** — 3 or 4 cards of the same rank, each a different suit.
    - A joker can stand in for any missing card, but **no group may contain more than one joker**.
 4. Either discard a card (drag it onto the discard pile) to end your turn, or hit **Finish**.
 5. Finishing requires all 14 of your other cards arranged into valid groups, with **at least one trio and one suivie built without any joker**, and exactly one card left over to throw face down.
 6. **Winning off the discard** (only when "Allow drawing from discard" is off): once the tournante is gone, the pile isn't fully dead — you may still pick up the top card if, and only if, it completes your win right away. It can go into any of your groups, but you still need at least one trio and one suivie built purely from your own cards — no joker, and not the card you just picked up. If you pick it up and can't finish, you must return it before doing anything else.
 
-## Scoring
-
-Before dealing, set a **points target** (default 500). Scores carry over from round to round until someone crosses that line:
+### Complet scoring
 
 - **When a player finishes a round**, every other player takes **100 points**.
 - **If the finishing player's face-down 15th card is a joker**, everyone else takes **200 points** instead.
 - **If a player hits Finish and their hand turns out invalid**, that player takes a **50-point penalty** on the spot.
-- **The first player to reach the points target loses the game** — play stops immediately, even mid-round, and the standings are shown with the lowest score highlighted as the winner.
+
+## How to play — 71 mode
+
+Dealing, drawing, the tournante, suivie/trio validity, and the joker cap all work exactly as in Complet. The difference is what happens once you're arranging your hand.
+
+**Card values in 71 mode:**
+- 2–10 count as face value.
+- J, Q, K always count as 10.
+- Ace counts as **1** when it's the low end of a suivie (A-2-3…), or **10** when it's the high end of a suivie (…Q-K-A) or part of a trio of aces.
+
+**Opening the table:**
+1. Build a trio and a suivie — each **completely joker-free** — whose combined value beats the table's current threshold (71 to start).
+2. Tap **Lay Down**. If it qualifies, those groups move to the shared table, you're marked "opened," and the threshold rises to the total you just laid down — the next player who wants to open has to beat *that* number, not just 71.
+3. If it doesn't qualify, nothing moves — fix your groups and try again.
+
+**Once you're opened:**
+- Tap **Lay Down** any time to add further valid groups (jokers now allowed, no threshold check).
+- Drag a card from your hand onto **any** combination on the table — yours or another player's — to extend it, as long as the combination stays a valid trio or suivie afterward. An invalid drop is rejected and the card stays in your hand.
+- The shared table is always visible to everyone, even while hands are hidden between turns.
+
+**Closing:** once you've laid off or added every card except one, tap **Close** to throw that last card face down and end the round.
+
+### 71 scoring
+
+When someone closes:
+- Every other player who **never opened** takes a flat **100 points**.
+- Every other player who **did open** takes the total value of whatever's left in their hand (2–10 face value, J/Q/K/an ace paired with aces or a king = 10, a lone ace = 1; an unplayed joker costs 20 as a house-rule default).
+- **If the closer's final card is a joker**, every other player's total for the round is **doubled**.
+- The closer themselves scores 0 for the round.
+
+## Both modes
+
+**The first player to reach the points target loses the game** — play stops immediately, even mid-round, and the standings are shown with the lowest score highlighted as the winner.
 
 ## Project structure
 
 ```
-index.html            The entire game — markup, styles, and game logic in one file
+rami.html            The entire game — markup, styles, and game logic in one file
 README.md            This file
 assets/
   logo.svg           Full detail app icon (vector)
@@ -99,7 +129,7 @@ assets/
   banner.svg / .png   README header banner
 ```
 
-The icons in `assets/` are also embedded directly inside `index.html` as base64
+The icons in `assets/` are also embedded directly inside `rami.html` as base64
 data URIs (favicon, touch icon, and manifest), so the game stays a single
 portable file — the `assets/` folder is there for reference, and for anywhere
 else in the repo that wants the artwork (README, store listing, etc).
@@ -114,9 +144,10 @@ dependencies. All rendering is done with template strings and a single
 
 A couple of judgment calls were made where common Rami rules vary by region:
 
-- Ace is low only (no wrap-around run through King–Ace–Two).
+- Ace can anchor a suivie at either end — A-2-3… or …Q-K-A — but a run never wraps around through K-A-2.
 - If the stock runs out, older discards are reshuffled back into the stock.
 - Groups are capped at one joker each.
+- In 71 mode, when a suivie has a joker at the end of its span (extending beyond the natural cards), the "cheapest" contiguous placement is used to compute its point value. An unplayed joker left in a losing hand costs a flat 20 points; neither number is specified by classic rules, so both are configurable defaults (`standaloneValue` / `comboValue` in the `<script>`).
 
 Feel free to open the file and adjust `analyzeGroup` / `validateFinish` in the
 `<script>` if your table plays by different conventions.
