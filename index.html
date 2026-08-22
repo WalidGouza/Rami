@@ -175,12 +175,18 @@ function analyzeGroup(cards){
   if(n>=3){
     const suit = naturals[0].suit;
     const sameSuit = naturals.every(c=>c.suit===suit);
-    const ranks = naturals.map(c=>c.rank);
-    const uniq = new Set(ranks);
-    if(sameSuit && uniq.size===naturals.length){
-      const minR = Math.min(...ranks), maxR = Math.max(...ranks);
-      const sLow = Math.max(1, maxR-n+1), sHigh = Math.min(minR, 13-n+1);
-      if(sLow<=sHigh) result.suivie = true;
+    if(sameSuit){
+      const hasAce = naturals.some(c=>c.rank===1);
+      const checkRun = (aceHigh)=>{
+        const ranks = naturals.map(c => (aceHigh && c.rank===1) ? 14 : c.rank);
+        const uniq = new Set(ranks);
+        if(uniq.size !== naturals.length) return false; // duplicate rank
+        const top = aceHigh ? 14 : 13;
+        const minR = Math.min(...ranks), maxR = Math.max(...ranks);
+        const sLow = Math.max(1, maxR-n+1), sHigh = Math.min(minR, top-n+1);
+        return sLow<=sHigh;
+      };
+      if(checkRun(false) || (hasAce && checkRun(true))) result.suivie = true;
     }
   }
   return result;
@@ -693,7 +699,7 @@ function renderSetup(){
         <li><strong>With "Allow drawing from the discard pile" turned on</strong>, the pile never locks — every player, every turn, freely chooses to draw from the stock or from the top of the discard pile, exactly like classic rummy.</li>
         <li>Tap the stock (or the discard pile, when it's drawable) to draw. Drag cards to reorder your hand and build groups exactly where you want them — or select a card, then tap another card or a zone to move it there.</li>
         <li>To discard, drag a card onto the discard pile — or select a card and tap the discard pile.</li>
-        <li><strong>Suivie</strong>: 3+ consecutive cards, same suit. <strong>Trio</strong>: 3 or 4 cards, same rank, all different suits. A combination can never contain more than one joker.</li>
+        <li><strong>Suivie</strong>: 3+ consecutive cards, same suit — Ace can sit low (A-2-3…) or high (…Q-K-A), but a run can never wrap around through K-A-2. <strong>Trio</strong>: 3 or 4 cards, same rank, all different suits. A combination can never contain more than one joker.</li>
         <li>Your finished hand needs at least one suivie and one trio built with no joker at all.</li>
         <li><strong>Winning off the discard</strong> (only when the setting above is off): once the tournante is gone, you may still pick up the top discard card, but only to try to finish immediately. It can go anywhere in your groups — but you still need one trio and one suivie built purely from your own cards, with no joker and without the card you just picked up. If you can't finish, return it to the pile.</li>
         <li>Tap Finish any time — it checks your hand; if it's not a valid win yet, play just continues.</li>
