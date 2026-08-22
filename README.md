@@ -34,6 +34,7 @@ Everything — game logic, styling, and even the app icons — lives inside the 
 - **Win off the discard** — even after the pile locks, any player may pick up the top discard specifically to attempt an immediate win; if it doesn't complete a valid hand, it must be returned.
 - **Finish whenever you want** — the Finish button is always available; it validates your hand (at least one joker-free trio and one joker-free suivie) and simply tells you if it's not a win yet.
 - **One joker per combination** — jokers fill gaps, but no group may contain more than one.
+- **Points & game-over target** — set a points target before dealing (default 500); the game tracks everyone's running score and ends as soon as someone reaches it.
 - **Installable** — includes a favicon, Apple touch icon, and web app manifest baked in, so it can be added to a phone's home screen or a desktop as a standalone app.
 
 ## Getting started
@@ -42,7 +43,7 @@ No installation required.
 
 1. Download `rami.html`.
 2. Open it in any modern browser (Chrome, Safari, Firefox, Edge).
-3. Choose the number of players, name each seat, tick "Bot-controlled" for any seat you want the computer to play, and deal.
+3. Choose the number of players, set the points target, name each seat, tick "Bot-controlled" for any seat you want the computer to play, and deal.
 
 ### Installing it as an app
 
@@ -62,7 +63,16 @@ Each player is dealt 14 cards; the dealer gets 15.
    - A joker can stand in for any missing card, but **no group may contain more than one joker**.
 4. Either discard a card (drag it onto the discard pile) to end your turn, or hit **Finish**.
 5. Finishing requires all 14 of your other cards arranged into valid groups, with **at least one trio and one suivie built without any joker**, and exactly one card left over to throw face down.
-6. **Winning off the discard:** once the tournante is gone, the pile isn't fully dead — you may still pick up the top card if, and only if, it completes your win right away (and lands in a joker-free group). If you pick it up and can't finish, you must return it before doing anything else.
+6. **Winning off the discard:** once the tournante is gone, the pile isn't fully dead — you may still pick up the top card if, and only if, it completes your win right away. It can go into any of your groups, but you still need at least one trio and one suivie built purely from your own cards — no joker, and not the card you just picked up. If you pick it up and can't finish, you must return it before doing anything else.
+
+## Scoring
+
+Before dealing, set a **points target** (default 500). Scores carry over from round to round until someone crosses that line:
+
+- **When a player finishes a round**, every other player takes **100 points**.
+- **If the finishing player's face-down 15th card is a joker**, everyone else takes **200 points** instead.
+- **If a player hits Finish and their hand turns out invalid**, that player takes a **50-point penalty** on the spot.
+- **The first player to reach the points target loses the game** — play stops immediately, even mid-round, and the standings are shown with the lowest score highlighted as the winner.
 
 ## Project structure
 

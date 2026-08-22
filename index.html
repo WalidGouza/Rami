@@ -205,15 +205,16 @@ function validateFinish(meldGroups, cardsById){
 
 /* ============================= STATE ============================= */
 let state = {};
-function newSetupState(){ return { screen:'SETUP', numPlayers:4, names:['Player 1','Player 2','Player 3','Player 4'], bots:[false,false,false,false] }; }
+function newSetupState(){ return { screen:'SETUP', numPlayers:4, names:['Player 1','Player 2','Player 3','Player 4'], bots:[false,false,false,false], pointsTarget:500 }; }
 state = newSetupState();
 
-function startGame(numPlayers, names, bots){
-  const players = names.map((nm,i)=>({ name: nm && nm.trim() ? nm.trim() : 'Player '+(i+1), isBot: !!bots[i], hand: [], arrangement:{pool:[],groups:[]} }));
+function startGame(numPlayers, names, bots, pointsTarget){
+  const players = names.map((nm,i)=>({ name: nm && nm.trim() ? nm.trim() : 'Player '+(i+1), isBot: !!bots[i], score:0, hand: [], arrangement:{pool:[],groups:[]} }));
   let viewIndex = players.findIndex(p=>!p.isBot);
   if(viewIndex===-1) viewIndex = 0;
   state = {
     screen:'GAME', players, dealerIndex:0, currentIndex:0, hasBot: players.some(p=>p.isBot), viewIndex,
+    pointsTarget: (Number.isFinite(pointsTarget) && pointsTarget>0) ? pointsTarget : 500, gameOver:false,
     stock:[], discardPile:[], tournantePending:true, nextAfterDealer: 1 % numPlayers,
     phase:'PASS', pendingAfterPass:'ARRANGE', discardWinAttempt:null,
     selectedCardId:null, errorMsg:null, winner:null, resultMsg:null,
@@ -404,24 +405,52 @@ function tryFinish(){
   const arr = player.arrangement;
   const nonEmptyGroups = arr.groups.filter(g=>g.length>0);
   const cardsById = {}; player.hand.forEach(c=>cardsById[c.id]=c);
+
+  function fail(msg){
+    state.errorMsg = msg;
+    player.score = (player.score||0) + 50;
+    if(player.score >= state.pointsTarget){
+      state.gameOver = true;
+      state.winner = null;
+      state.resultMsg = null;
+      state.phase = 'RESULT';
+    }
+    render();
+  }
+
   if(arr.pool.length!==1){
-    state.errorMsg = `Leave exactly 1 card ungrouped to throw face down — you currently have ${arr.pool.length} loose.`;
-    render(); return;
+    fail(`Leave exactly 1 card ungrouped to throw face down — you currently have ${arr.pool.length} loose. (−50 pts penalty for a wrong Finish)`);
+    return;
   }
   const check = validateFinish(nonEmptyGroups, cardsById);
-  if(!check.ok){ state.errorMsg = check.reason; render(); return; }
+  if(!check.ok){ fail(check.reason + ' (−50 pts penalty for a wrong Finish)'); return; }
   if(state.discardWinAttempt){
-    const grp = nonEmptyGroups.find(g=>g.includes(state.discardWinAttempt));
-    if(!grp){ state.errorMsg = 'The card you picked up from the discard must be used inside one of your groups.'; render(); return; }
-    const info = analyzeGroup(grp.map(id=>cardsById[id]));
-    if(info.hasJoker){ state.errorMsg = 'The group holding the discard pickup can\'t include a joker.'; render(); return; }
+    const pickupId = state.discardWinAttempt;
+    let hasPureTrioExcl = false, hasPureSuivieExcl = false;
+    for(const g of nonEmptyGroups){
+      if(g.includes(pickupId)) continue;
+      const info = analyzeGroup(g.map(id=>cardsById[id]));
+      if(info.trio && !info.hasJoker) hasPureTrioExcl = true;
+      if(info.suivie && !info.hasJoker) hasPureSuivieExcl = true;
+    }
+    if(!hasPureTrioExcl || !hasPureSuivieExcl){
+      fail('You need a trio and a suivie made without any joker and without the card you just picked up from the discard. (−50 pts penalty for a wrong Finish)');
+      return;
+    }
   }
   const lastId = arr.pool[0];
+  const finishingCard = cardsById[lastId];
+  const isJokerFinish = !!finishingCard.joker;
   const idx = player.hand.findIndex(c=>c.id===lastId);
   player.hand.splice(idx,1);
   arr.pool = [];
   state.discardWinAttempt = null;
+  const pointsEach = isJokerFinish ? 200 : 100;
+  state.players.forEach((p,i)=>{ if(i!==state.currentIndex) p.score = (p.score||0) + pointsEach; });
   state.winner = state.currentIndex;
+  state.finishWasJoker = isJokerFinish;
+  state.roundPoints = pointsEach;
+  state.gameOver = state.players.some(p=>p.score >= state.pointsTarget);
   state.phase='RESULT';
   render();
 }
@@ -591,6 +620,10 @@ function renderSetup(){
       <label>Number of players</label>
       <select id="numPlayers">${[2,3,4,5,6,7].map(v=>`<option value="${v}" ${v===n?'selected':''}>${v} players</option>`).join('')}</select>
     </div>
+    <div class="field">
+      <label>Points target (first to reach it loses)</label>
+      <input type="number" id="pointsTarget" min="50" step="50" value="${state.pointsTarget || 500}">
+    </div>
     <div id="nameFields" class="grid2">${nameFields}</div>
     <div class="btnrow"><button class="primary" id="startBtn">Deal the cards</button></div>
     <details class="rules">
@@ -603,8 +636,9 @@ function renderSetup(){
         <li>To discard, drag a card onto the discard pile — or select a card and tap the discard pile.</li>
         <li><strong>Suivie</strong>: 3+ consecutive cards, same suit. <strong>Trio</strong>: 3 or 4 cards, same rank, all different suits. A combination can never contain more than one joker.</li>
         <li>Your finished hand needs at least one suivie and one trio built with no joker at all.</li>
-        <li><strong>Winning off the discard:</strong> once the tournante is gone, you may still pick up the top discard card, but only to try to finish immediately — it must end up inside a joker-free group. If you can't finish, return it to the pile.</li>
+        <li><strong>Winning off the discard:</strong> once the tournante is gone, you may still pick up the top discard card, but only to try to finish immediately. It can go anywhere in your groups — but you still need one trio and one suivie built purely from your own cards, with no joker and without the card you just picked up. If you can't finish, return it to the pile.</li>
         <li>Tap Finish any time — it checks your hand; if it's not a valid win yet, play just continues.</li>
+        <li><strong>Scoring:</strong> when someone finishes, every other player takes 100 points (200 if the face-down 15th card was a joker). Hitting Finish with an invalid hand costs the finisher a 50-point penalty. Whoever first reaches the points target loses the game.</li>
       </ul>
     </details>
   </div>
@@ -618,12 +652,15 @@ function attachSetupHandlers(){
       const el=document.getElementById('name-'+i); names.push(el?el.value:'Player '+(i+1));
       const bc=document.getElementById('bot-'+i); bots.push(bc?bc.checked:false);
     }
+    const ptEl = document.getElementById('pointsTarget');
+    state.pointsTarget = ptEl ? (parseInt(ptEl.value,10)||500) : state.pointsTarget;
     state.numPlayers = n; state.names = names; state.bots = bots; render();
   };
   document.getElementById('startBtn').onclick = ()=>{
     const n = state.numPlayers; const names=[]; const bots=[];
     for(let i=0;i<n;i++){ names.push(document.getElementById('name-'+i).value); bots.push(document.getElementById('bot-'+i).checked); }
-    startGame(n, names, bots);
+    const pointsTarget = parseInt(document.getElementById('pointsTarget').value,10) || 500;
+    startGame(n, names, bots, pointsTarget);
   };
 }
 
@@ -631,7 +668,7 @@ function renderPlayersBar(){
   return `<div class="playersbar">${state.players.map((p,i)=>{
     const active = i===state.currentIndex;
     const isDealer = i===state.dealerIndex;
-    return `<div class="chip ${active?'active':''}">${p.isBot?'🤖 ':''}${p.name} · ${p.hand.length}${isDealer?` <span class="dealer-badge">(dealer)</span>`:''}</div>`;
+    return `<div class="chip ${active?'active':''}">${p.isBot?'🤖 ':''}${p.name} · ${p.hand.length}🂠 · ${p.score||0}pts${isDealer?` <span class="dealer-badge">(dealer)</span>`:''}</div>`;
   }).join('')}</div>`;
 }
 
@@ -651,9 +688,40 @@ function renderPassScreen(){
 }
 function revealHand(){ state.phase = state.pendingAfterPass; state.errorMsg=null; render(); }
 
+function renderScoreboard(){
+  const sorted = state.players.map((p,i)=>({p,idx:i})).sort((a,b)=>(a.p.score||0)-(b.p.score||0));
+  const rows = sorted.map(({p})=>{
+    const score = p.score||0;
+    const over = score >= state.pointsTarget;
+    return `<div style="display:flex;justify-content:space-between;gap:10px;padding:6px 10px;border-bottom:1px solid rgba(201,162,75,0.15);${over?'color:var(--danger);font-weight:700;':''}">
+      <span>${p.isBot?'🤖 ':''}${p.name}</span><span>${score} / ${state.pointsTarget} pts${over?' — OUT':''}</span>
+    </div>`;
+  }).join('');
+  return `<div class="zone" style="margin-top:10px;"><div class="zone-label">Scoreboard</div>${rows}</div>`;
+}
+
 function renderResultScreen(){
+  if(state.gameOver){
+    const losers = state.players.filter(p=>(p.score||0) >= state.pointsTarget);
+    const sorted = state.players.slice().sort((a,b)=>(a.score||0)-(b.score||0));
+    const champion = sorted[0];
+    const roundNote = state.winner!==null
+      ? `<p class="status-line">${state.players[state.winner].name} finished the round${state.finishWasJoker ? ' with a joker as the 15th card' : ''}, handing out ${state.roundPoints} points to everyone else.</p>`
+      : `<p class="status-line">A wrong Finish attempt added the penalty that ended the game.</p>`;
+    return `
+    <div class="header"><div class="eyebrow">Game Over</div></div>
+    <div class="panel">
+      <h2 style="color:var(--danger)">🏁 ${losers.map(p=>p.name).join(' & ')} reached ${state.pointsTarget} points and ${losers.length>1?'lose':'loses'} the game!</h2>
+      ${roundNote}
+      <p class="status-line">🏆 ${champion.name} finishes with the lowest score (${champion.score||0} pts).</p>
+      ${renderScoreboard()}
+      <div class="btnrow"><button class="primary" onclick="backToSetup()">New game</button></div>
+    </div>`;
+  }
+
   const winnerText = state.winner!==null
-    ? `<h2 style="color:var(--gold-bright)">🏆 ${state.players[state.winner].name} wins the round!</h2>`
+    ? `<h2 style="color:var(--gold-bright)">🏆 ${state.players[state.winner].name} wins the round!</h2>
+       <p class="status-line">${state.finishWasJoker ? 'Finished with a joker as the 15th card — everyone else takes 200 points.' : 'Everyone else takes 100 points.'}</p>`
     : `<h2>${state.resultMsg}</h2>`;
   const hands = state.players.map((p,i)=>{
     if(i===state.winner){
@@ -676,6 +744,7 @@ function renderResultScreen(){
   <div class="panel">
     ${winnerText}
     ${hands}
+    ${renderScoreboard()}
     <div class="btnrow">
       <button class="primary" onclick="newRound()">Deal next round</button>
       <button class="ghost" onclick="backToSetup()">New game</button>
