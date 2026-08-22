@@ -419,11 +419,11 @@ function tryFinish(){
   }
 
   if(arr.pool.length!==1){
-    fail(`Leave exactly 1 card ungrouped to throw face down — you currently have ${arr.pool.length} loose. (−50 pts penalty for a wrong Finish)`);
+    fail(`Leave exactly 1 card ungrouped to throw face down — you currently have ${arr.pool.length} loose. (+50 pts penalty for a wrong Finish)`);
     return;
   }
   const check = validateFinish(nonEmptyGroups, cardsById);
-  if(!check.ok){ fail(check.reason + ' (−50 pts penalty for a wrong Finish)'); return; }
+  if(!check.ok){ fail(check.reason + ' (+50 pts penalty for a wrong Finish)'); return; }
   if(state.discardWinAttempt){
     const pickupId = state.discardWinAttempt;
     let hasPureTrioExcl = false, hasPureSuivieExcl = false;
@@ -434,7 +434,7 @@ function tryFinish(){
       if(info.suivie && !info.hasJoker) hasPureSuivieExcl = true;
     }
     if(!hasPureTrioExcl || !hasPureSuivieExcl){
-      fail('You need a trio and a suivie made without any joker and without the card you just picked up from the discard. (−50 pts penalty for a wrong Finish)');
+      fail('You need a trio and a suivie made without any joker and without the card you just picked up from the discard. (+50 pts penalty for a wrong Finish)');
       return;
     }
   }

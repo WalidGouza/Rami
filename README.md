@@ -15,13 +15,13 @@
 
 ## What is this?
 
-`rami.html` is a complete, self-contained implementation of **Rami**, the two-deck
+`index.html` is a complete, self-contained implementation of **Rami**, the two-deck
 rummy game popular across North Africa and the Middle East. Open the file in any
 browser and play — locally, hotseat-style, with 2 to 7 players, any mix of humans
 and bot opponents.
 
 Everything — game logic, styling, and even the app icons — lives inside the single
-`rami.html` file, so it can be shared, downloaded, or hosted as-is.
+`index.html` file, so it can be shared, downloaded, or hosted as-is.
 
 ## Features
 
@@ -41,13 +41,13 @@ Everything — game logic, styling, and even the app icons — lives inside the 
 
 No installation required.
 
-1. Download `rami.html`.
+1. Download `index.html`.
 2. Open it in any modern browser (Chrome, Safari, Firefox, Edge).
 3. Choose the number of players, set the points target, name each seat, tick "Bot-controlled" for any seat you want the computer to play, and deal.
 
 ### Installing it as an app
 
-- **Desktop (Chrome/Edge):** open `rami.html`, then use the browser's "Install app" / "Create shortcut" option. The card icon will show up as the app icon.
+- **Desktop (Chrome/Edge):** open `index.html`, then use the browser's "Install app" / "Create shortcut" option. The card icon will show up as the app icon.
 - **Mobile (iOS/Android):** open the file in your browser, then use "Add to Home Screen." It will launch full-screen with its own icon, using the embedded manifest and touch icon.
 
 ## How to play
@@ -77,7 +77,7 @@ Before dealing, set a **points target** (default 500). Scores carry over from ro
 ## Project structure
 
 ```
-rami.html            The entire game — markup, styles, and game logic in one file
+index.html            The entire game — markup, styles, and game logic in one file
 README.md            This file
 assets/
   logo.svg           Full detail app icon (vector)
@@ -89,7 +89,7 @@ assets/
   banner.svg / .png   README header banner
 ```
 
-The icons in `assets/` are also embedded directly inside `rami.html` as base64
+The icons in `assets/` are also embedded directly inside `index.html` as base64
 data URIs (favicon, touch icon, and manifest), so the game stays a single
 portable file — the `assets/` folder is there for reference, and for anywhere
 else in the repo that wants the artwork (README, store listing, etc).
