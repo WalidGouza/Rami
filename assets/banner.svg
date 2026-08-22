@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 360">
+  <defs>
+    <radialGradient id="bg" cx="20%" cy="15%" r="100%">
+      <stop offset="0%" stop-color="#0e6a63"/>
+      <stop offset="55%" stop-color="#0B4F4A"/>
+      <stop offset="100%" stop-color="#052422"/>
+    </radialGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#E7C978"/>
+      <stop offset="100%" stop-color="#C9A24B"/>
+    </linearGradient>
+    <pattern id="lattice" width="26" height="26" patternTransform="rotate(45)" patternUnits="userSpaceOnUse">
+      <rect width="13" height="13" fill="#C9A24B" opacity="0.05"/>
+      <rect x="13" y="13" width="13" height="13" fill="#C9A24B" opacity="0.05"/>
+    </pattern>
+  </defs>
+
+  <rect width="1200" height="360" fill="url(#bg)"/>
+  <rect width="1200" height="360" fill="url(#lattice)"/>
+
+  <!-- card mark -->
+  <g transform="translate(150 180)">
+    <g transform="rotate(-9)">
+      <rect x="-72" y="-98" width="144" height="196" rx="18" fill="#052422" stroke="url(#gold)" stroke-width="4"/>
+    </g>
+    <g transform="rotate(5)">
+      <rect x="-72" y="-98" width="144" height="196" rx="18" fill="#F7F1E3" stroke="url(#gold)" stroke-width="6"/>
+      <g transform="translate(0 6)">
+        <g transform="translate(-42,-2) rotate(-12) scale(0.82)">
+          <rect x="-24" y="-24" width="48" height="48" rx="7" transform="rotate(45)" fill="#B23A2E"/>
+        </g>
+        <g transform="translate(42,-2) rotate(12) scale(0.82)">
+          <path d="M0,30 C-30,5 -30,-20 -12,-28 C-4,-32 0,-24 0,-16 C0,-24 4,-32 12,-28 C30,-20 30,5 0,30 Z" fill="#B23A2E"/>
+        </g>
+        <g transform="translate(0,8) scale(0.86)">
+          <path d="M0,-30 C-30,-5 -30,20 -12,28 C-4,32 0,24 0,16 C0,24 4,32 12,28 C30,20 30,-5 0,-30 Z
+                   M-9,26 L9,26 L15,50 L-15,50 Z" fill="#1E2A28"/>
+        </g>
+      </g>
+    </g>
+  </g>
+
+  <text x="330" y="205" font-family="Poppins, sans-serif" font-weight="700" font-size="120" fill="url(#gold)" letter-spacing="4">RAMI</text>
+  <text x="333" y="250" font-family="Poppins, sans-serif" font-weight="500" font-size="26" fill="#F7F1E3" opacity="0.85" letter-spacing="2">TWO DECKS · ONE TABLE · PLAY IN ANY BROWSER</text>
+</svg>
