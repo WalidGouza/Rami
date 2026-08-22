@@ -15,13 +15,13 @@
 
 ## What is this?
 
-`rami.html` is a complete, self-contained implementation of **Rami**, the two-deck
+`index.html` is a complete, self-contained implementation of **Rami**, the two-deck
 rummy game popular across North Africa and the Middle East. Open the file in any
 browser and play — locally, hotseat-style, with 2 to 7 players, any mix of humans
 and bot opponents.
 
 Everything — game logic, styling, and even the app icons — lives inside the single
-`rami.html` file, so it can be shared, downloaded, or hosted as-is.
+`index.html` file, so it can be shared, downloaded, or hosted as-is.
 
 ## Features
 
@@ -35,20 +35,30 @@ Everything — game logic, styling, and even the app icons — lives inside the 
 - **Finish whenever you want** — the Finish button is always available; it validates your hand (at least one joker-free trio and one joker-free suivie) and simply tells you if it's not a win yet.
 - **One joker per combination** — jokers fill gaps, but no group may contain more than one.
 - **Points & game-over target** — set a points target before dealing (default 500); the game tracks everyone's running score and ends as soon as someone reaches it.
+- **Table settings** — before dealing, choose the hand size (13 or 14 cards), play with or without jokers, pick Complet or 71 mode, and decide whether the discard pile can be drawn from freely every turn, like a second stock.
 - **Installable** — includes a favicon, Apple touch icon, and web app manifest baked in, so it can be added to a phone's home screen or a desktop as a standalone app.
 
 ## Getting started
 
 No installation required.
 
-1. Download `rami.html`.
+1. Download `index.html`.
 2. Open it in any modern browser (Chrome, Safari, Firefox, Edge).
 3. Choose the number of players, set the points target, name each seat, tick "Bot-controlled" for any seat you want the computer to play, and deal.
 
 ### Installing it as an app
 
-- **Desktop (Chrome/Edge):** open `rami.html`, then use the browser's "Install app" / "Create shortcut" option. The card icon will show up as the app icon.
+- **Desktop (Chrome/Edge):** open `index.html`, then use the browser's "Install app" / "Create shortcut" option. The card icon will show up as the app icon.
 - **Mobile (iOS/Android):** open the file in your browser, then use "Add to Home Screen." It will launch full-screen with its own icon, using the embedded manifest and touch icon.
+
+## Table settings
+
+Set these before dealing:
+
+- **Allow drawing from discard** — off by default. Off means the original rule: only the player right after the dealer may freely draw the very first discard (the tournante); after that the pile locks, though any player may still pick it up later purely to win on the spot (see "Winning off the discard" below). Turned on, the discard pile behaves like a second stock for the whole game — on your turn you simply choose to draw from the stock or from the top of the discard pile, no restriction, just like classic rummy.
+- **Hand size** — 14 cards per player (dealer gets 15) by default, or 13 (dealer gets 14).
+- **Jokers** — included by default (108-card double deck); turn off to play with a pure 104-card double deck and no jokers at all.
+- **Game mode** — **Complet** (the default, and the only mode currently implemented): arrange your whole hand and finish all at once, as described below. **71** is listed as a second mode for a points-based variant (reach 71+ using card values) but isn't implemented yet — selecting it still plays a normal Complet game for now.
 
 ## How to play
 
@@ -63,7 +73,7 @@ Each player is dealt 14 cards; the dealer gets 15.
    - A joker can stand in for any missing card, but **no group may contain more than one joker**.
 4. Either discard a card (drag it onto the discard pile) to end your turn, or hit **Finish**.
 5. Finishing requires all 14 of your other cards arranged into valid groups, with **at least one trio and one suivie built without any joker**, and exactly one card left over to throw face down.
-6. **Winning off the discard:** once the tournante is gone, the pile isn't fully dead — you may still pick up the top card if, and only if, it completes your win right away. It can go into any of your groups, but you still need at least one trio and one suivie built purely from your own cards — no joker, and not the card you just picked up. If you pick it up and can't finish, you must return it before doing anything else.
+6. **Winning off the discard** (only when "Allow drawing from discard" is off): once the tournante is gone, the pile isn't fully dead — you may still pick up the top card if, and only if, it completes your win right away. It can go into any of your groups, but you still need at least one trio and one suivie built purely from your own cards — no joker, and not the card you just picked up. If you pick it up and can't finish, you must return it before doing anything else.
 
 ## Scoring
 
@@ -77,7 +87,7 @@ Before dealing, set a **points target** (default 500). Scores carry over from ro
 ## Project structure
 
 ```
-rami.html            The entire game — markup, styles, and game logic in one file
+index.html            The entire game — markup, styles, and game logic in one file
 README.md            This file
 assets/
   logo.svg           Full detail app icon (vector)
@@ -89,7 +99,7 @@ assets/
   banner.svg / .png   README header banner
 ```
 
-The icons in `assets/` are also embedded directly inside `rami.html` as base64
+The icons in `assets/` are also embedded directly inside `index.html` as base64
 data URIs (favicon, touch icon, and manifest), so the game stays a single
 portable file — the `assets/` folder is there for reference, and for anywhere
 else in the repo that wants the artwork (README, store listing, etc).

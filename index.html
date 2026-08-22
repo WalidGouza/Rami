@@ -144,13 +144,13 @@ const RANK_LABEL = {1:'A',11:'J',12:'Q',13:'K'};
 function rankLabel(r){ return RANK_LABEL[r] || String(r); }
 function isRed(suit){ return suit==='♥' || suit==='♦'; }
 
-function buildDeck(){
+function buildDeck(useJokers){
   let deck = []; let n = 0;
   for(let d=0; d<2; d++){
     for(const s of SUITS){ for(let r=1;r<=13;r++){ deck.push({id:'c'+(n++), suit:s, rank:r, joker:false}); } }
-    for(let j=0;j<2;j++){ deck.push({id:'c'+(n++), suit:null, rank:null, joker:true}); }
+    if(useJokers){ for(let j=0;j<2;j++){ deck.push({id:'c'+(n++), suit:null, rank:null, joker:true}); } }
   }
-  return deck; // (13*4+2)*2 = 108
+  return deck; // with jokers: (13*4+2)*2 = 108. without: 13*4*2 = 104
 }
 function shuffle(arr){
   const a = arr.slice();
@@ -185,7 +185,8 @@ function analyzeGroup(cards){
   }
   return result;
 }
-function validateFinish(meldGroups, cardsById){
+function validateFinish(meldGroups, cardsById, handSize){
+  handSize = handSize || 14;
   let total=0, hasPureTrio=false, hasPureSuivie=false;
   if(meldGroups.length===0) return {ok:false, reason:'Group your cards into at least one trio and one suivie first.'};
   for(const g of meldGroups){
@@ -197,24 +198,26 @@ function validateFinish(meldGroups, cardsById){
     if(info.trio && !info.hasJoker) hasPureTrio = true;
     if(info.suivie && !info.hasJoker) hasPureSuivie = true;
   }
-  if(total!==14) return {ok:false, reason:`You must have exactly 14 cards placed in groups (currently ${total}).`};
+  if(total!==handSize) return {ok:false, reason:`You must have exactly ${handSize} cards placed in groups (currently ${total}).`};
   if(!hasPureTrio) return {ok:false, reason:'You need at least one trio made entirely without a joker.'};
   if(!hasPureSuivie) return {ok:false, reason:'You need at least one suivie made entirely without a joker.'};
   return {ok:true};
 }
 
+
 /* ============================= STATE ============================= */
 let state = {};
-function newSetupState(){ return { screen:'SETUP', numPlayers:4, names:['Player 1','Player 2','Player 3','Player 4'], bots:[false,false,false,false], pointsTarget:500 }; }
+function newSetupState(){ return { screen:'SETUP', numPlayers:4, names:['Player 1','Player 2','Player 3','Player 4'], bots:[false,false,false,false], pointsTarget:500, settings:{ allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet' } }; }
 state = newSetupState();
 
-function startGame(numPlayers, names, bots, pointsTarget){
+function startGame(numPlayers, names, bots, pointsTarget, settings){
   const players = names.map((nm,i)=>({ name: nm && nm.trim() ? nm.trim() : 'Player '+(i+1), isBot: !!bots[i], score:0, hand: [], arrangement:{pool:[],groups:[]} }));
   let viewIndex = players.findIndex(p=>!p.isBot);
   if(viewIndex===-1) viewIndex = 0;
   state = {
     screen:'GAME', players, dealerIndex:0, currentIndex:0, hasBot: players.some(p=>p.isBot), viewIndex,
     pointsTarget: (Number.isFinite(pointsTarget) && pointsTarget>0) ? pointsTarget : 500, gameOver:false,
+    settings: Object.assign({ allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet' }, settings||{}),
     stock:[], discardPile:[], tournantePending:true, nextAfterDealer: 1 % numPlayers,
     phase:'PASS', pendingAfterPass:'ARRANGE', discardWinAttempt:null,
     selectedCardId:null, errorMsg:null, winner:null, resultMsg:null,
@@ -223,10 +226,11 @@ function startGame(numPlayers, names, bots, pointsTarget){
 }
 
 function dealGame(){
-  const deck = shuffle(buildDeck());
+  const handSize = state.settings.handSize;
+  const deck = shuffle(buildDeck(state.settings.useJokers));
   state.players.forEach(p=>{ p.hand=[]; p.arrangement={pool:[],groups:[]}; });
   const n = state.players.length;
-  for(let round=0; round<14; round++){ for(let p=0;p<n;p++){ state.players[p].hand.push(deck.pop()); } }
+  for(let round=0; round<handSize; round++){ for(let p=0;p<n;p++){ state.players[p].hand.push(deck.pop()); } }
   state.players[state.dealerIndex].hand.push(deck.pop());
   state.players.forEach(p=>{
     p.hand.sort((a,b)=>{ if(a.joker&&b.joker) return 0; if(a.joker) return 1; if(b.joker) return -1; return a.rank-b.rank; });
@@ -248,7 +252,8 @@ function dealGame(){
   render();
 }
 function newRound(){ state.dealerIndex=(state.dealerIndex+1)%state.players.length; dealGame(); }
-function backToSetup(){ state = newSetupState(); render(); }
+function backToSetup(){ const settings = state.settings; state = newSetupState(); if(settings) state.settings = settings; render(); }
+
 
 /* ============================= HELPERS ============================= */
 function currentPlayer(){ return state.players[state.currentIndex]; }
@@ -296,9 +301,27 @@ function doTournanteDraw(){
   state.phase='ARRANGE'; state.selectedCardId=null; state.errorMsg=null;
   render();
 }
-/* pick up the discard pile specifically to attempt an immediate win; must finish or return it */
+/* "Allow drawing from discard" setting ON: draw from discard freely, any turn, like drawing from stock */
+function drawFromDiscardFree(){
+  if(state.phase!=='DRAW' || currentPlayer().isBot) return;
+  if(!state.settings.allowDiscardDraw) return;
+  if(state.discardPile.length===0) return;
+  doDiscardFreeDraw();
+}
+function doDiscardFreeDraw(){
+  const card = state.discardPile.pop();
+  const player = currentPlayer();
+  player.hand.push(card);
+  player.arrangement.pool.push(card.id);
+  state.tournantePending=false;
+  state.phase='ARRANGE'; state.selectedCardId=null; state.errorMsg=null;
+  render();
+}
+/* "Allow drawing from discard" setting OFF (default): pick up the discard pile specifically to attempt
+   an immediate win; must finish with it or return it. */
 function attemptDiscardWinDraw(){
   if(state.phase!=='DRAW' || currentPlayer().isBot) return;
+  if(state.settings.allowDiscardDraw) return;
   if(state.discardPile.length===0) return;
   if(state.tournantePending && state.currentIndex===state.nextAfterDealer){ drawTournante(); return; }
   const card = state.discardPile.pop();
@@ -422,7 +445,7 @@ function tryFinish(){
     fail(`Leave exactly 1 card ungrouped to throw face down — you currently have ${arr.pool.length} loose. (−50 pts penalty for a wrong Finish)`);
     return;
   }
-  const check = validateFinish(nonEmptyGroups, cardsById);
+  const check = validateFinish(nonEmptyGroups, cardsById, state.settings.handSize);
   if(!check.ok){ fail(check.reason + ' (−50 pts penalty for a wrong Finish)'); return; }
   if(state.discardWinAttempt){
     const pickupId = state.discardWinAttempt;
@@ -528,6 +551,10 @@ function maybeRunBot(){
 }
 function botDraw(){
   if(state.phase!=='DRAW' || !currentPlayer().isBot) return;
+  if(state.settings.allowDiscardDraw){
+    if(state.discardPile.length>0 && Math.random()<0.5){ doDiscardFreeDraw(); } else { doStockDraw(); }
+    return;
+  }
   const eligible = state.tournantePending && state.currentIndex===state.nextAfterDealer && state.discardPile.length>0;
   if(eligible && Math.random()<0.5){ doTournanteDraw(); } else { doStockDraw(); }
 }
@@ -551,7 +578,7 @@ function botArrangeAndAct(){
   player.arrangement.pool = poolCards.map(c=>c.id);
   if(poolCards.length===1){
     const cardsById={}; player.hand.forEach(c=>cardsById[c.id]=c);
-    const check = validateFinish(player.arrangement.groups, cardsById);
+    const check = validateFinish(player.arrangement.groups, cardsById, state.settings.handSize);
     if(check.ok){ tryFinish(); return; }
   }
   const toDiscard = poolCards.find(c=>!c.joker) || poolCards[0];
@@ -602,6 +629,7 @@ function render(){
 
 function renderSetup(){
   const n = state.numPlayers;
+  const s = state.settings;
   let nameFields = '';
   for(let i=0;i<n;i++){
     nameFields += `<div class="field"><label>Player ${i+1}</label>
@@ -624,25 +652,64 @@ function renderSetup(){
       <label>Points target (first to reach it loses)</label>
       <input type="number" id="pointsTarget" min="50" step="50" value="${state.pointsTarget || 500}">
     </div>
+
+    <div class="field">
+      <label>Game settings</label>
+      <label class="botcheck"><input type="checkbox" id="allowDiscardDraw" ${s.allowDiscardDraw?'checked':''}> Allow drawing from the discard pile every turn (like drawing from stock) — off by default</label>
+    </div>
+    <div class="grid2">
+      <div class="field">
+        <label>Hand size</label>
+        <select id="handSize">
+          <option value="14" ${s.handSize===14?'selected':''}>14 cards (dealer gets 15)</option>
+          <option value="13" ${s.handSize===13?'selected':''}>13 cards (dealer gets 14)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Jokers</label>
+        <select id="useJokers">
+          <option value="yes" ${s.useJokers?'selected':''}>With jokers (108 cards)</option>
+          <option value="no" ${!s.useJokers?'selected':''}>Without jokers (104 cards)</option>
+        </select>
+      </div>
+    </div>
+    <div class="field">
+      <label>Game mode</label>
+      <select id="gameMode">
+        <option value="complet" ${s.mode==='complet'?'selected':''}>Complet — arrange your whole hand and finish at once</option>
+        <option value="71" ${s.mode==='71'?'selected':''}>71 — reach 71+ points in card values (coming soon)</option>
+      </select>
+      ${s.mode==='71' ? `<div class="notice-box" style="margin-top:8px;">The 71 variant isn't implemented yet — this game will still play as Complet.</div>` : ''}
+    </div>
+
     <div id="nameFields" class="grid2">${nameFields}</div>
     <div class="btnrow"><button class="primary" id="startBtn">Deal the cards</button></div>
     <details class="rules">
       <summary>How to play</summary>
       <ul>
-        <li>Each player gets 14 cards; the dealer gets 15. Check "Bot-controlled" for any seat you want the computer to play — bot games skip the pass-the-device screen and just disable the stock/discard while the bot is thinking.</li>
-        <li>The dealer opens by discarding one card face up — the <em>tournante</em>.</li>
-        <li>Only the very next player may draw that tournante for free. After that, the pile can't be freely drawn from — but any player may still pick up the top discard if it completes their win on the spot (see below).</li>
-        <li>Tap the stock to draw. Drag cards to reorder your hand and build groups exactly where you want them — or select a card, then tap another card or a zone to move it there.</li>
+        <li>Each player gets your chosen hand size (13 or 14) of cards; the dealer gets one extra. Check "Bot-controlled" for any seat you want the computer to play — bot games skip the pass-the-device screen and just disable the stock/discard while the bot is thinking.</li>
+        <li>The dealer opens by discarding one card face up — the <em>tournante</em>. The very next player may always draw it for free.</li>
+        <li><strong>By default</strong> (discard-draw setting off), the pile locks after that: no more free draws, though any player may still pick up the top discard later if it completes their win on the spot (see below).</li>
+        <li><strong>With "Allow drawing from the discard pile" turned on</strong>, the pile never locks — every player, every turn, freely chooses to draw from the stock or from the top of the discard pile, exactly like classic rummy.</li>
+        <li>Tap the stock (or the discard pile, when it's drawable) to draw. Drag cards to reorder your hand and build groups exactly where you want them — or select a card, then tap another card or a zone to move it there.</li>
         <li>To discard, drag a card onto the discard pile — or select a card and tap the discard pile.</li>
         <li><strong>Suivie</strong>: 3+ consecutive cards, same suit. <strong>Trio</strong>: 3 or 4 cards, same rank, all different suits. A combination can never contain more than one joker.</li>
         <li>Your finished hand needs at least one suivie and one trio built with no joker at all.</li>
-        <li><strong>Winning off the discard:</strong> once the tournante is gone, you may still pick up the top discard card, but only to try to finish immediately. It can go anywhere in your groups — but you still need one trio and one suivie built purely from your own cards, with no joker and without the card you just picked up. If you can't finish, return it to the pile.</li>
+        <li><strong>Winning off the discard</strong> (only when the setting above is off): once the tournante is gone, you may still pick up the top discard card, but only to try to finish immediately. It can go anywhere in your groups — but you still need one trio and one suivie built purely from your own cards, with no joker and without the card you just picked up. If you can't finish, return it to the pile.</li>
         <li>Tap Finish any time — it checks your hand; if it's not a valid win yet, play just continues.</li>
-        <li><strong>Scoring:</strong> when someone finishes, every other player takes 100 points (200 if the face-down 15th card was a joker). Hitting Finish with an invalid hand costs the finisher a 50-point penalty. Whoever first reaches the points target loses the game.</li>
+        <li><strong>Scoring:</strong> when someone finishes, every other player takes 100 points (200 if the face-down last card was a joker). Hitting Finish with an invalid hand costs the finisher a 50-point penalty. Whoever first reaches the points target loses the game.</li>
       </ul>
     </details>
   </div>
   <footer class="credits">Local hotseat play — pass the device to whoever's hand is shown.</footer>`;
+}
+function readSettingsFromDom(){
+  return {
+    allowDiscardDraw: document.getElementById('allowDiscardDraw').checked,
+    handSize: parseInt(document.getElementById('handSize').value,10)===13 ? 13 : 14,
+    useJokers: document.getElementById('useJokers').value==='yes',
+    mode: document.getElementById('gameMode').value==='71' ? '71' : 'complet',
+  };
 }
 function attachSetupHandlers(){
   document.getElementById('numPlayers').onchange = (e)=>{
@@ -654,13 +721,16 @@ function attachSetupHandlers(){
     }
     const ptEl = document.getElementById('pointsTarget');
     state.pointsTarget = ptEl ? (parseInt(ptEl.value,10)||500) : state.pointsTarget;
+    state.settings = readSettingsFromDom();
     state.numPlayers = n; state.names = names; state.bots = bots; render();
   };
+  document.getElementById('gameMode').onchange = ()=>{ state.settings = readSettingsFromDom(); render(); };
   document.getElementById('startBtn').onclick = ()=>{
     const n = state.numPlayers; const names=[]; const bots=[];
     for(let i=0;i<n;i++){ names.push(document.getElementById('name-'+i).value); bots.push(document.getElementById('bot-'+i).checked); }
     const pointsTarget = parseInt(document.getElementById('pointsTarget').value,10) || 500;
-    startGame(n, names, bots, pointsTarget);
+    const settings = readSettingsFromDom();
+    startGame(n, names, bots, pointsTarget, settings);
   };
 }
 
@@ -762,14 +832,17 @@ function renderTable(){
   const topDiscard = state.discardPile[state.discardPile.length-1];
   const canDraw = isTurn && state.phase==='DRAW';
   const canArrange = isTurn && state.phase==='ARRANGE';
-  const tournanteEligible = canDraw && state.tournantePending && state.currentIndex===state.nextAfterDealer && state.discardPile.length>0;
+  const generalDiscardDraw = state.settings.allowDiscardDraw;
+  const tournanteEligible = !generalDiscardDraw && canDraw && state.tournantePending && state.currentIndex===state.nextAfterDealer && state.discardPile.length>0;
   const stockClickable = canDraw && !(state.stock.length===0 && state.discardPile.length<=1);
-  const discardWinPossible = canDraw && !tournanteEligible && state.discardPile.length>0;
+  const freeDiscardDrawable = generalDiscardDraw && canDraw && state.discardPile.length>0;
+  const discardWinPossible = !generalDiscardDraw && canDraw && !tournanteEligible && state.discardPile.length>0;
 
   const stockPileHTML = `<div onclick="${stockClickable?'drawFromStock()':''}" style="${stockClickable?'cursor:pointer':''}">${state.stock.length>0 ? backCardHTML() : emptyCardHTML()}</div>`;
 
   let discardClick = '';
   if(tournanteEligible) discardClick = 'drawTournante()';
+  else if(freeDiscardDrawable) discardClick = 'drawFromDiscardFree()';
   else if(discardWinPossible) discardClick = 'attemptDiscardWinDraw()';
   else if(canArrange) discardClick = "zoneClick('throw')";
   const discardDropAttrs = canArrange ? `ondragover="allowDrop(event)" ondrop="onDropZone(event,'throw')"` : '';
@@ -777,6 +850,7 @@ function renderTable(){
 
   let discardCountText;
   if(state.discardPile.length===0) discardCountText = 'empty';
+  else if(generalDiscardDraw) discardCountText = 'drawable, like the stock';
   else if(state.tournantePending) discardCountText = 'tournante — drawable once';
   else discardCountText = 'pick up only to win';
 
@@ -808,7 +882,13 @@ function renderTable(){
     const actor = state.players[state.currentIndex];
     statusLine = `🤖 ${actor.name} is playing — the stock and discard are locked until they finish.`;
   }
-  else if(state.phase==='DRAW') statusLine = tournanteEligible ? 'Tap the stock to draw a fresh card, or tap the tournante to take it.' : (discardWinPossible ? 'Tap the stock to draw — or tap the discard pile if it would let you finish right now.' : 'Tap the stock to draw a card.');
+  else if(state.phase==='DRAW') statusLine = tournanteEligible
+    ? 'Tap the stock to draw a fresh card, or tap the tournante to take it.'
+    : freeDiscardDrawable
+      ? 'Tap the stock or the discard pile to draw.'
+      : discardWinPossible
+        ? 'Tap the stock to draw — or tap the discard pile if it would let you finish right now.'
+        : 'Tap the stock to draw a card.';
   else if(state.discardWinAttempt) statusLine = 'You picked up the discard to try to win. Finish now, or return it.';
   else statusLine = 'Drag cards to arrange them exactly where you want — or tap a card, then tap another card or a zone.';
 
