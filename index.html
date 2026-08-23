@@ -133,17 +133,231 @@
   .result-hand h3{ font-size:14px; margin-bottom:6px; color:var(--gold-bright); }
 
   footer.credits{ text-align:center; font-size:11px; color:rgba(247,241,227,0.35); margin-top:24px; }
+
+  .room-code{ font-family:'Cairo',sans-serif; font-size:34px; letter-spacing:.25em; text-align:center; color:var(--gold-bright); font-weight:800; margin:10px 0; user-select:all; }
+  .seat-row{ display:flex; align-items:center; justify-content:space-between; padding:10px 14px; border:1px solid rgba(201,162,75,0.3); border-radius:10px; margin-bottom:8px; background:rgba(0,0,0,0.18); }
+  .seat-row.empty{ opacity:.5; border-style:dashed; }
+  .mode-toggle{ display:flex; gap:10px; margin-top:6px; }
+  .mode-toggle button{ flex:1; }
+  .mode-toggle button.active{ background:var(--gold); color:var(--felt-deeper); border-color:var(--gold); }
 </style>
 </head>
 <body>
 <div id="app"></div>
 
+<script src="https://www.gstatic.com/firebasejs/10.13.1/firebase-app-compat.js" crossorigin="anonymous" onerror="window.__fbLoadError='firebase-app-compat.js could not be loaded (blocked or unreachable)'"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.1/firebase-auth-compat.js" crossorigin="anonymous" onerror="window.__fbLoadError='firebase-auth-compat.js could not be loaded (blocked or unreachable)'"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.1/firebase-database-compat.js" crossorigin="anonymous" onerror="window.__fbLoadError='firebase-database-compat.js could not be loaded (blocked or unreachable)'"></script>
 <script>
+window.addEventListener('error', function(e){
+  console.error('Uncaught error:', e.message, e.error, 'at', e.filename+':'+e.lineno);
+});
+window.addEventListener('unhandledrejection', function(e){
+  console.error('Unhandled promise rejection:', e.reason);
+});
 /* ============================= DATA & HELPERS ============================= */
 const SUITS = ['♠','♥','♦','♣'];
 const RANK_LABEL = {1:'A',11:'J',12:'Q',13:'K'};
 function rankLabel(r){ return RANK_LABEL[r] || String(r); }
 function isRed(suit){ return suit==='♥' || suit==='♦'; }
+
+/* ============================= ONLINE MULTIPLAYER (Firebase) ============================= */
+/* Fill these in with your own free Firebase project's config (Firebase console → Project settings
+   → your web app → SDK setup and configuration). Enable Realtime Database and Anonymous
+   Authentication. Full setup steps and the security rules to paste are in the README. */
+const firebaseConfig = {
+  apiKey: "AIzaSyCIIaW7EW2RYFYImyH5YojzYN14yGkNkCA",
+  authDomain: "rami---card-game.firebaseapp.com",
+  databaseURL: "https://rami---card-game-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "rami---card-game",
+  storageBucket: "rami---card-game.firebasestorage.app",
+  messagingSenderId: "218613516965",
+  appId: "1:218613516965:web:abe5a0ffab4ba39caa9b4c",
+  measurementId: "G-FQQJZQT975"
+};
+const FIREBASE_CONFIGURED = !/PASTE_YOUR/.test(firebaseConfig.apiKey);
+
+let fbDb = null, myUid = null;
+let roomRef = null, roomListener = null;
+let room = null; // last-known raw room object straight from Firebase
+
+let firebaseError = null;
+function initFirebase(onReady, attempt){
+  attempt = attempt || 0;
+  if(!FIREBASE_CONFIGURED) return;
+  if(fbDb){ if(myUid) onReady && onReady(); return; }
+  if(typeof firebase==='undefined'){
+    if(window.__fbLoadError){
+      firebaseError = window.__fbLoadError + '. This usually means an ad blocker, privacy extension, corporate firewall, or offline connection is stopping the browser from reaching gstatic.com. Try: opening https://www.gstatic.com/firebasejs/10.13.1/firebase-app-compat.js directly in a new tab to see if it loads there, or testing in a private/incognito window with extensions turned off.';
+      paintUI(); return;
+    }
+    if(attempt<10){ setTimeout(()=>initFirebase(onReady, attempt+1), 300); return; } // still loading, not necessarily blocked yet
+    firebaseError = 'The Firebase SDK never loaded — check your internet connection, or whether an ad blocker / privacy extension is blocking gstatic.com. Try opening https://www.gstatic.com/firebasejs/10.13.1/firebase-app-compat.js directly in a new tab to check.';
+    paintUI(); return;
+  }
+  try{
+    firebase.initializeApp(firebaseConfig);
+    fbDb = firebase.database();
+  } catch(err){
+    console.error('Firebase init failed:', err);
+    firebaseError = 'Firebase failed to initialize: ' + err.message;
+    paintUI(); return;
+  }
+  firebase.auth().onAuthStateChanged(user=>{
+    if(user){ myUid = user.uid; firebaseError = null; onReady && onReady(); }
+  });
+  firebase.auth().signInAnonymously().catch(err=>{
+    console.error('Firebase anonymous sign-in failed:', err);
+    firebaseError = 'Could not sign in: ' + err.message + (err.code==='auth/configuration-not-found' ? ' — make sure Anonymous sign-in is enabled in Firebase Authentication settings.' : '');
+    paintUI();
+  });
+}
+
+function makeRoomCode(){
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no ambiguous-looking characters
+  let code = '';
+  for(let i=0;i<5;i++){ code += chars[Math.floor(Math.random()*chars.length)]; }
+  return code;
+}
+
+/* fields that make up the synced, authoritative game state — everything the table/hand UI needs.
+   NOTE: this is a simple, honor-system multiplayer model: every seat's cards are technically sent
+   to every connected client so drag/drop and validation can run locally, and the UI just doesn't
+   display anyone else's hand. A technically curious player could inspect the raw network data.
+   For a game with friends that's normally a non-issue; see the README if you want the stricter,
+   per-player-hidden version instead. */
+const SYNC_KEYS = ['players','dealerIndex','currentIndex','hasBot','pointsTarget','gameOver',
+  'settings','stock','discardPile','tournantePending','nextAfterDealer','table','requiredThreshold',
+  'allCardsById','phase','pendingAfterPass','discardWinAttempt','winner','resultMsg','finishWasJoker',
+  'roundPoints','lastRoundDeltas'];
+
+function pushGameState(){
+  if(!fbDb || !state.roomCode) return;
+  const payload = {};
+  SYNC_KEYS.forEach(k=>{ if(state[k]!==undefined) payload[k]=state[k]; });
+  fbDb.ref('rooms/'+state.roomCode+'/game').set(payload).catch(err=>console.error('Rami sync error:', err));
+}
+function onRemoteGameUpdate(remoteGame){
+  if(!remoteGame) return;
+  SYNC_KEYS.forEach(k=>{ if(remoteGame[k]!==undefined) state[k]=remoteGame[k]; });
+  const idx = state.players ? state.players.findIndex(p=>p.uid===myUid) : -1;
+  if(idx>-1) state.mySeatIndex = idx;
+  state.selectedCardId = null;
+  state.errorMsg = null;
+  paintUI();
+}
+
+function createRoom(name){
+  if(!fbDb || !myUid){ alert(firebaseError || 'Still connecting to Firebase — wait a second and try again.'); return; }
+  const code = makeRoomCode();
+  const seat = { uid: myUid, name: (name||'Player').trim() || 'Player', isBot:false };
+  fbDb.ref('rooms/'+code).set({
+    hostUid: myUid,
+    status: 'waiting',
+    createdAt: firebase.database.ServerValue.TIMESTAMP,
+    seats: [seat],
+    pointsTarget: 500,
+    settings: { allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet', openThreshold:71, scoringStyle:'value' },
+  }).then(()=>{
+    localStorage.setItem('rami_room', code);
+    localStorage.setItem('rami_name', seat.name);
+    joinRoomListener(code);
+  }).catch(err=>{ alert('Could not create room: '+err.message); });
+}
+function joinRoom(code, name){
+  if(!fbDb || !myUid){ alert(firebaseError || 'Still connecting to Firebase — wait a second and try again.'); return; }
+  code = (code||'').trim().toUpperCase();
+  if(!code) return;
+  const ref = fbDb.ref('rooms/'+code);
+  ref.once('value').then(snap=>{
+    const val = snap.val();
+    if(!val){ alert('No room found with that code.'); return; }
+    if(val.status!=='waiting'){ alert('That game has already started.'); return; }
+    const already = (val.seats||[]).some(s=>s && s.uid===myUid);
+    const finish = ()=>{
+      localStorage.setItem('rami_room', code);
+      localStorage.setItem('rami_name', (name||'Player').trim() || 'Player');
+      joinRoomListener(code);
+    };
+    if(already){ finish(); return; }
+    if((val.seats||[]).filter(Boolean).length>=7){ alert('That room is full.'); return; }
+    ref.child('seats').transaction(current=>{
+      current = current || [];
+      if(current.some(s=>s && s.uid===myUid)) return current;
+      current.push({ uid: myUid, name: (name||'Player').trim() || 'Player', isBot:false });
+      return current;
+    }).then(finish);
+  }).catch(err=>{ alert('Could not join room: '+err.message); });
+}
+function joinRoomListener(code){
+  if(roomRef && roomListener) roomRef.off('value', roomListener);
+  state.roomCode = code;
+  roomRef = fbDb.ref('rooms/'+code);
+  roomListener = roomRef.on('value', snap=>{
+    room = snap.val();
+    if(!room) return; // room was deleted
+    state.isHost = room.hostUid === myUid;
+    if(room.status==='waiting'){
+      state.online = false;
+      state.screen = 'ONLINE_WAITING';
+      paintUI();
+    } else if(room.status==='playing'){
+      state.online = true;
+      state.screen = 'GAME';
+      if(room.game) onRemoteGameUpdate(room.game); else paintUI();
+    }
+  });
+}
+function leaveRoom(){
+  if(roomRef && roomListener) roomRef.off('value', roomListener);
+  roomRef = null; room = null;
+  localStorage.removeItem('rami_room');
+  state = newLandingState();
+  render();
+}
+function addBotSeat(){
+  if(!room || !state.isHost) return;
+  const seats = (room.seats||[]).slice();
+  if(seats.length>=7) return;
+  seats.push({ uid: 'bot-'+Math.random().toString(36).slice(2,8), name: 'Bot '+(seats.filter(s=>s.isBot).length+1), isBot:true });
+  fbDb.ref('rooms/'+state.roomCode+'/seats').set(seats);
+}
+function removeSeat(seatIdx){
+  if(!room || !state.isHost) return;
+  const seats = (room.seats||[]).slice();
+  if(!seats[seatIdx] || seats[seatIdx].uid===room.hostUid) return;
+  seats.splice(seatIdx,1);
+  fbDb.ref('rooms/'+state.roomCode+'/seats').set(seats);
+}
+function updateRoomSettings(){
+  if(!room || !state.isHost) return;
+  const ptEl = document.getElementById('mpPointsTarget');
+  const pointsTarget = ptEl ? (parseInt(ptEl.value,10)||500) : 500;
+  const settings = readSettingsFromDom();
+  fbDb.ref('rooms/'+state.roomCode).update({ pointsTarget, settings });
+}
+function startOnlineGame(){
+  if(!room || !state.isHost) return;
+  const seats = (room.seats||[]).filter(Boolean);
+  if(seats.length<2){ alert('Need at least 2 players before you can start.'); return; }
+  const players = seats.map(s=>({ name:s.name, isBot:!!s.isBot, uid:s.uid, score:0, opened:false, hand:[], arrangement:{pool:[],groups:[]} }));
+  state.players = players;
+  state.dealerIndex = 0; state.currentIndex = 0;
+  state.hasBot = players.some(p=>p.isBot);
+  state.pointsTarget = room.pointsTarget || 500;
+  state.gameOver = false;
+  state.settings = Object.assign({ allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet', openThreshold:71, scoringStyle:'value' }, room.settings||{});
+  state.online = true;
+  state.screen = 'GAME';
+  const myIdx = players.findIndex(p=>p.uid===myUid);
+  state.mySeatIndex = myIdx>-1 ? myIdx : 0;
+  state.suppressPush = true;
+  dealGame(); // deals locally and paints immediately; the push below carries it to everyone else
+  state.suppressPush = false;
+  const payload = {}; SYNC_KEYS.forEach(k=>{ if(state[k]!==undefined) payload[k]=state[k]; });
+  fbDb.ref('rooms/'+state.roomCode).update({ status:'playing', game: payload });
+}
+
 
 function buildDeck(useJokers){
   let deck = []; let n = 0;
@@ -260,14 +474,15 @@ function standaloneValue(card){
 /* ============================= STATE ============================= */
 let state = {};
 function newSetupState(){ return { screen:'SETUP', numPlayers:4, names:['Player 1','Player 2','Player 3','Player 4'], bots:[false,false,false,false], pointsTarget:500, settings:{ allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet', openThreshold:71, scoringStyle:'value' } }; }
-state = newSetupState();
+function newLandingState(){ return { screen:'LANDING' }; }
+state = newLandingState();
 
 function startGame(numPlayers, names, bots, pointsTarget, settings){
   const players = names.map((nm,i)=>({ name: nm && nm.trim() ? nm.trim() : 'Player '+(i+1), isBot: !!bots[i], score:0, opened:false, hand: [], arrangement:{pool:[],groups:[]} }));
   let viewIndex = players.findIndex(p=>!p.isBot);
   if(viewIndex===-1) viewIndex = 0;
   state = {
-    screen:'GAME', players, dealerIndex:0, currentIndex:0, hasBot: players.some(p=>p.isBot), viewIndex,
+    screen:'GAME', players, dealerIndex:0, currentIndex:0, hasBot: players.some(p=>p.isBot), viewIndex, online:false,
     pointsTarget: (Number.isFinite(pointsTarget) && pointsTarget>0) ? pointsTarget : 500, gameOver:false,
     settings: Object.assign({ allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet', openThreshold:71, scoringStyle:'value' }, settings||{}),
     stock:[], discardPile:[], tournantePending:true, nextAfterDealer: 1 % numPlayers,
@@ -307,8 +522,15 @@ function dealGame(){
   state.resultMsg = null;
   render();
 }
-function newRound(){ state.dealerIndex=(state.dealerIndex+1)%state.players.length; dealGame(); }
-function backToSetup(){ const settings = state.settings; state = newSetupState(); if(settings) state.settings = settings; render(); }
+function newRound(){
+  if(state.online && !state.isHost) return;
+  state.dealerIndex=(state.dealerIndex+1)%state.players.length;
+  dealGame();
+}
+function backToSetup(){
+  if(state.online){ leaveRoom(); return; }
+  const settings = state.settings; state = newSetupState(); if(settings) state.settings = settings; render();
+}
 
 
 /* ============================= HELPERS ============================= */
@@ -319,10 +541,17 @@ function removeFromArrangement(arr, id){
   if(idx>-1){ arr.pool.splice(idx,1); return; }
   for(const g of arr.groups){ idx=g.indexOf(id); if(idx>-1){ g.splice(idx,1); return; } }
 }
+/* True if the LOCAL client is not allowed to act right now: it's a bot's turn, or (in an online
+   room) it's simply not this client's seat. */
+function blockedForMe(){
+  if(currentPlayer().isBot) return true;
+  if(state.online && state.currentIndex !== state.mySeatIndex) return true;
+  return false;
+}
 
 /* ============================= TURN ACTIONS ============================= */
 function drawFromStock(){
-  if(state.phase!=='DRAW' || currentPlayer().isBot) return;
+  if(state.phase!=='DRAW' || blockedForMe()) return;
   doStockDraw();
 }
 function doStockDraw(){
@@ -339,12 +568,12 @@ function doStockDraw(){
   const player = currentPlayer();
   player.hand.push(card);
   player.arrangement.pool.push(card.id);
-  if(state.currentIndex===state.nextAfterDealer) state.tournantePending=false;
+  if(state.tournantePending) state.tournantePending=false;
   state.phase='ARRANGE'; state.selectedCardId=null; state.errorMsg=null;
   render();
 }
 function drawTournante(){
-  if(state.phase!=='DRAW' || currentPlayer().isBot) return;
+  if(state.phase!=='DRAW' || blockedForMe()) return;
   if(!(state.tournantePending && state.currentIndex===state.nextAfterDealer && state.discardPile.length>0)) return;
   doTournanteDraw();
 }
@@ -359,7 +588,7 @@ function doTournanteDraw(){
 }
 /* "Allow drawing from discard" setting ON: draw from discard freely, any turn, like drawing from stock */
 function drawFromDiscardFree(){
-  if(state.phase!=='DRAW' || currentPlayer().isBot) return;
+  if(state.phase!=='DRAW' || blockedForMe()) return;
   if(!state.settings.allowDiscardDraw) return;
   if(state.discardPile.length===0) return;
   doDiscardFreeDraw();
@@ -389,11 +618,12 @@ function hasReadyTrioAndSuivie71(player){
   return hasTrio && hasSuivie;
 }
 function attemptDiscardWinDraw(){
-  if(state.phase!=='DRAW' || currentPlayer().isBot) return;
+  if(state.phase!=='DRAW' || blockedForMe()) return;
   if(state.settings.allowDiscardDraw) return;
   if(state.discardPile.length===0) return;
   if(state.tournantePending && state.currentIndex===state.nextAfterDealer){ drawTournante(); return; }
   const player = currentPlayer();
+  if(player.hand.length===1) return; // down to your last card — must draw from the stock instead
   if(state.settings.mode==='71' && !hasReadyTrioAndSuivie71(player)) return;
   const card = state.discardPile.pop();
   player.hand.push(card);
@@ -404,6 +634,7 @@ function attemptDiscardWinDraw(){
 }
 function returnDiscardCard(){
   if(!state.discardWinAttempt) return;
+  if(blockedForMe()) return;
   const player = currentPlayer();
   const id = state.discardWinAttempt;
   removeFromArrangement(player.arrangement, id);
@@ -495,7 +726,7 @@ function moveCardToTable(id, destIdx, beforeId, fromTable, sourceIdx, player){
 
 /* zoneType: 'pool' | 'group' | 'newgroup' | 'throw' | 'table'. beforeId: insert before this card id, or null/undefined to append at end. */
 function performMove(id, zoneType, idx, beforeId){
-  if(state.phase!=='ARRANGE' || currentPlayer().isBot) return;
+  if(state.phase!=='ARRANGE' || blockedForMe()) return;
   if(id===beforeId) return;
   const player = currentPlayer();
   if(zoneType==='throw'){ doDiscard(id); return; }
@@ -549,7 +780,7 @@ function onDropOnCard(ev, zoneType, idx, beforeId){ ev.preventDefault(); ev.stop
 /* click-to-move */
 function onCardClick(ev, zoneType, idx, id){
   ev.stopPropagation();
-  if(state.phase!=='ARRANGE' || currentPlayer().isBot) return;
+  if(state.phase!=='ARRANGE' || blockedForMe()) return;
   if(state.selectedCardId && state.selectedCardId!==id){
     const sel = state.selectedCardId; state.selectedCardId=null;
     performMove(sel, zoneType, idx, id);
@@ -559,13 +790,14 @@ function onCardClick(ev, zoneType, idx, id){
   render();
 }
 function zoneClick(zoneType, idx){
-  if(state.phase!=='ARRANGE' || currentPlayer().isBot) return;
+  if(state.phase!=='ARRANGE' || blockedForMe()) return;
   if(!state.selectedCardId) return;
   const id = state.selectedCardId; state.selectedCardId = null;
   performMove(id, zoneType, idx, null);
 }
 
 function disbandGroup(idx){
+  if(state.phase!=='ARRANGE' || blockedForMe()) return;
   const arr = currentArrangement();
   arr.pool.push(...arr.groups[idx]);
   arr.groups.splice(idx,1);
@@ -600,7 +832,7 @@ function evaluateGroupsForOpening(validGroups, cardsById){
 function tryOpenAndLayDown(){
   if(state.phase!=='ARRANGE' || state.settings.mode!=='71') return;
   const player = currentPlayer();
-  if(player.isBot) return;
+  if(blockedForMe()) return;
   const arr = player.arrangement;
   const cardsById = {}; player.hand.forEach(c=>cardsById[c.id]=c);
   const validGroups = arr.groups.filter(g=>{ const info=analyzeGroup(g.map(id=>cardsById[id])); return info.trio||info.suivie; });
@@ -620,18 +852,7 @@ function tryOpenAndLayDown(){
 /* going out in 71 mode: hand must be down to exactly the one face-down closing card, and the
    player must have opened. Scores every other player on their leftover hand (or a flat 100 if
    they never opened), doubled for everyone if the closing card is a joker. */
-function closeRound71(){
-  if(state.phase!=='ARRANGE' || state.settings.mode!=='71') return;
-  const player = currentPlayer();
-  const arr = player.arrangement;
-  if(!player.opened){ if(!player.isBot){ state.errorMsg='You need to open (lay down more than the table\'s threshold) before you can close.'; render(); } return; }
-  if(arr.groups.length>0){ if(!player.isBot){ state.errorMsg='Lay down or break up your remaining groups before closing.'; render(); } return; }
-  if(arr.pool.length!==1){ if(!player.isBot){ state.errorMsg = `You still have ${arr.pool.length} loose card(s) to place before closing.`; render(); } return; }
-  const lastId = arr.pool[0];
-  const card = player.hand.find(c=>c.id===lastId);
-  const isJokerClose = !!(card && card.joker);
-  player.hand = player.hand.filter(c=>c.id!==lastId);
-  arr.pool = [];
+function applyCloseScoring71(isJokerClose){
   const deltas = state.players.map(()=>0);
   state.players.forEach((p,i)=>{
     if(i===state.currentIndex) return;
@@ -644,6 +865,58 @@ function closeRound71(){
     p.score = (p.score||0) + pts;
   });
   state.lastRoundDeltas = deltas;
+}
+function closeRound71(){
+  if(state.phase!=='ARRANGE' || state.settings.mode!=='71') return;
+  const player = currentPlayer();
+  if(blockedForMe()) return;
+  const arr = player.arrangement;
+  if(!player.opened){ if(!player.isBot){ state.errorMsg='You need to open (lay down more than the table\'s threshold) before you can close.'; render(); } return; }
+  if(arr.groups.length>0){ if(!player.isBot){ state.errorMsg='Lay down or break up your remaining groups before closing.'; render(); } return; }
+  if(arr.pool.length!==1){ if(!player.isBot){ state.errorMsg = `You still have ${arr.pool.length} loose card(s) to place before closing.`; render(); } return; }
+  const lastId = arr.pool[0];
+  const card = player.hand.find(c=>c.id===lastId);
+  if(card && card.joker){
+    if(!player.isBot){ state.errorMsg = "You can't close with a joker as your last card this way — that's only allowed when closing with a Complet."; render(); }
+    return;
+  }
+  player.hand = player.hand.filter(c=>c.id!==lastId);
+  arr.pool = [];
+  applyCloseScoring71(false);
+  state.winner = state.currentIndex;
+  state.finishWasJoker = false;
+  state.roundPoints = null;
+  state.errorMsg = null;
+  state.discardWinAttempt = null;
+  state.gameOver = state.players.some(p=>(p.score||0) >= state.pointsTarget);
+  state.phase = 'RESULT';
+  render();
+}
+/* Instant "Complet-style" close in 71 mode: your whole hand (minus the one closing card) already
+   forms a full valid Complet finish — at least one joker-free trio and one joker-free suivie,
+   everything else grouped — so you can close right away without ever having opened or laid
+   anything on the table. This is the only route that allows a joker as the closing card
+   (which doubles everyone else's points, same as Complet mode). */
+function tryCompletCloseIn71(){
+  if(state.phase!=='ARRANGE' || state.settings.mode!=='71') return;
+  const player = currentPlayer();
+  if(blockedForMe()) return;
+  const arr = player.arrangement;
+  const nonEmptyGroups = arr.groups.filter(g=>g.length>0);
+  const cardsById = {}; player.hand.forEach(c=>cardsById[c.id]=c);
+  if(arr.pool.length!==1){
+    state.errorMsg = `Leave exactly 1 card ungrouped to throw face down — you currently have ${arr.pool.length} loose.`;
+    render(); return;
+  }
+  const check = validateFinish(nonEmptyGroups, cardsById, state.settings.handSize);
+  if(!check.ok){ state.errorMsg = check.reason; render(); return; }
+  const lastId = arr.pool[0];
+  const card = cardsById[lastId];
+  const isJokerClose = !!(card && card.joker);
+  player.hand = player.hand.filter(c=>c.id!==lastId);
+  arr.pool = [];
+  player.opened = true;
+  applyCloseScoring71(isJokerClose);
   state.winner = state.currentIndex;
   state.finishWasJoker = isJokerClose;
   state.roundPoints = null;
@@ -655,6 +928,7 @@ function closeRound71(){
 }
 
 function tryFinish(){
+  if(state.phase!=='ARRANGE' || blockedForMe()) return;
   const player = currentPlayer();
   const arr = player.arrangement;
   const nonEmptyGroups = arr.groups.filter(g=>g.length>0);
@@ -662,7 +936,7 @@ function tryFinish(){
 
   function fail(msg){
     state.errorMsg = msg;
-    player.score = (player.score||0) + 50;
+    player.score = (player.score||0) + 51;
     if(player.score >= state.pointsTarget){
       state.gameOver = true;
       state.winner = null;
@@ -673,11 +947,11 @@ function tryFinish(){
   }
 
   if(arr.pool.length!==1){
-    fail(`Leave exactly 1 card ungrouped to throw face down — you currently have ${arr.pool.length} loose. (−50 pts penalty for a wrong Finish)`);
+    fail(`Leave exactly 1 card ungrouped to throw face down — you currently have ${arr.pool.length} loose. (+51 pts penalty for a wrong Finish)`);
     return;
   }
   const check = validateFinish(nonEmptyGroups, cardsById, state.settings.handSize);
-  if(!check.ok){ fail(check.reason + ' (−50 pts penalty for a wrong Finish)'); return; }
+  if(!check.ok){ fail(check.reason + ' (+51 pts penalty for a wrong Finish)'); return; }
   if(state.discardWinAttempt){
     const pickupId = state.discardWinAttempt;
     let hasPureTrioExcl = false, hasPureSuivieExcl = false;
@@ -688,7 +962,7 @@ function tryFinish(){
       if(info.suivie && !info.hasJoker) hasPureSuivieExcl = true;
     }
     if(!hasPureTrioExcl || !hasPureSuivieExcl){
-      fail('You need a trio and a suivie made without any joker and without the card you just picked up from the discard. (−50 pts penalty for a wrong Finish)');
+      fail('You need a trio and a suivie made without any joker and without the card you just picked up from the discard. (+51 pts penalty for a wrong Finish)');
       return;
     }
   }
@@ -710,6 +984,7 @@ function tryFinish(){
 }
 
 function sortHand(mode){
+  if(state.phase!=='ARRANGE' || blockedForMe()) return;
   const player = currentPlayer();
   const cardsById = {}; player.hand.forEach(c=>cardsById[c.id]=c);
   const suitOrder = {'♠':0,'♥':1,'♦':2,'♣':3};
@@ -782,6 +1057,7 @@ function maybeRunBot(){
 }
 function botDraw(){
   if(state.phase!=='DRAW' || !currentPlayer().isBot) return;
+  if(state.online && !state.isHost) return; // only the host's client drives bot turns online
   if(state.settings.allowDiscardDraw){
     if(state.discardPile.length>0 && Math.random()<0.5){ doDiscardFreeDraw(); } else { doStockDraw(); }
     return;
@@ -883,28 +1159,161 @@ function emptyCardHTML(){ return `<div class="card empty"></div>`; }
 
 /* ============================= RENDER: SCREENS ============================= */
 function render(){
+  paintUI();
+  if(state.online && state.screen==='GAME' && !state.suppressPush) pushGameState();
+}
+function paintUI(){
   const app = document.getElementById('app');
+  if(state.screen==='LANDING'){ app.innerHTML = renderLanding(); attachLandingHandlers(); return; }
+  if(state.screen==='ONLINE_LOBBY'){ app.innerHTML = renderOnlineLobby(); attachOnlineLobbyHandlers(); return; }
+  if(state.screen==='ONLINE_WAITING'){ app.innerHTML = renderOnlineWaiting(); attachOnlineWaitingHandlers(); return; }
   if(state.screen==='SETUP'){ app.innerHTML = renderSetup(); attachSetupHandlers(); return; }
   if(state.phase==='RESULT'){ app.innerHTML = renderResultScreen(); return; }
-  if(state.hasBot && state.phase==='PASS'){ state.phase = state.pendingAfterPass; }
+  if((state.hasBot || state.online) && state.phase==='PASS'){ state.phase = state.pendingAfterPass; }
+  if(state.online){
+    state.viewIndex = state.mySeatIndex;
+    app.innerHTML = renderTable();
+    if(currentPlayer().isBot){ maybeRunBot(); }
+    return;
+  }
   if(!state.hasBot && state.phase==='PASS'){ app.innerHTML = renderPassScreen(); return; }
   if(state.hasBot && !currentPlayer().isBot){ state.viewIndex = state.currentIndex; }
   app.innerHTML = renderTable();
   if(currentPlayer().isBot){ maybeRunBot(); }
 }
 
-function renderSetup(){
-  const n = state.numPlayers;
-  const s = state.settings;
-  const mode71 = s.mode==='71';
-  let nameFields = '';
-  for(let i=0;i<n;i++){
-    nameFields += `<div class="field"><label>Player ${i+1}</label>
-      <input type="text" id="name-${i}" value="${state.names[i] || 'Player '+(i+1)}">
-      <label class="botcheck"><input type="checkbox" id="bot-${i}" ${state.bots[i]?'checked':''}> Bot-controlled</label>
-      </div>`;
+function renderLanding(){
+  const savedRoom = localStorage.getItem('rami_room');
+  return `
+  <div class="header">
+    <div class="eyebrow">Rami · رامي</div>
+    <h1>Rami</h1>
+    <div class="sub">Two decks, 108 cards, one table.</div>
+  </div>
+  <div class="panel" style="text-align:center;">
+    <p class="status-line" style="margin-bottom:18px;">Play hotseat on one device, or start an online room and have friends join from their own.</p>
+    <div class="btnrow" style="flex-direction:column; align-items:stretch;">
+      <button class="primary" id="goLocal">Play locally on this device</button>
+      <button class="primary" id="goOnline">${savedRoom ? `Rejoin room ${savedRoom}` : 'Play online with friends'}</button>
+      ${savedRoom ? `<button class="ghost" id="forgetRoom" style="font-size:12px;">Not that room — start fresh</button>` : ''}
+    </div>
+  </div>
+  <footer class="credits">Online play needs a free Firebase project wired in — see the README.</footer>`;
+}
+function attachLandingHandlers(){
+  document.getElementById('goLocal').onclick = ()=>{ state = newSetupState(); render(); };
+  document.getElementById('goOnline').onclick = ()=>{
+    state = { screen:'ONLINE_LOBBY' };
+    initFirebase(()=>{
+      const savedRoom = localStorage.getItem('rami_room');
+      if(savedRoom){ joinRoomListener(savedRoom); } else { render(); }
+    });
+    render();
+  };
+  const forgetBtn = document.getElementById('forgetRoom');
+  if(forgetBtn) forgetBtn.onclick = (e)=>{ e.stopPropagation(); localStorage.removeItem('rami_room'); render(); };
+}
+
+function renderOnlineLobby(){
+  if(!FIREBASE_CONFIGURED){
+    return `
+    <div class="header"><div class="eyebrow">Rami</div><h1>Online play isn't set up yet</h1></div>
+    <div class="panel">
+      <p class="status-line">This copy of the game doesn't have a Firebase project wired in, so there's nowhere for it to sync with your friends' devices.</p>
+      <p class="status-line">Whoever's hosting the game needs to create a free Firebase project, enable Realtime Database, and paste the config into <code>firebaseConfig</code> near the top of the file's script. Full steps are in the README.</p>
+      <div class="btnrow"><button class="ghost" onclick="state=newLandingState(); render();">Back</button></div>
+    </div>`;
   }
-  const modeSettingsHTML = mode71 ? `
+  const savedName = localStorage.getItem('rami_name') || '';
+  return `
+  <div class="header"><div class="eyebrow">Rami</div><h1>Play online</h1></div>
+  ${firebaseError ? `<div class="error-box">${firebaseError}</div>` : ''}
+  <div class="panel">
+    <div class="field"><label>Your name</label><input type="text" id="mpName" value="${savedName}" placeholder="Your name"></div>
+    <div class="btnrow"><button class="primary" id="createRoomBtn">Create a room</button></div>
+  </div>
+  <div class="panel">
+    <div class="field"><label>Room code</label><input type="text" id="mpCode" placeholder="ABCDE" style="text-transform:uppercase;"></div>
+    <div class="btnrow"><button class="primary" id="joinRoomBtn">Join room</button></div>
+  </div>
+  <div class="btnrow"><button class="ghost" onclick="state=newLandingState(); render();">Back</button></div>`;
+}
+function attachOnlineLobbyHandlers(){
+  if(!FIREBASE_CONFIGURED) return;
+  document.getElementById('createRoomBtn').onclick = ()=>{
+    createRoom(document.getElementById('mpName').value);
+  };
+  document.getElementById('joinRoomBtn').onclick = ()=>{
+    joinRoom(document.getElementById('mpCode').value, document.getElementById('mpName').value);
+  };
+}
+
+function renderOnlineWaiting(){
+  if(!room){
+    return `<div class="header"><div class="eyebrow">Rami</div></div><div class="panel"><p class="status-line">Connecting…</p></div>`;
+  }
+  const seats = room.seats || [];
+  const seatRows = seats.map((s,i)=>{
+    if(!s) return '';
+    const isMe = s.uid===myUid;
+    const isHostSeat = s.uid===room.hostUid;
+    let controls = '';
+    if(state.isHost && !isHostSeat){
+      controls = `<button class="ghost" style="padding:6px 10px; font-size:12px;" onclick="removeSeat(${i})">Remove</button>`;
+    }
+    return `<div class="seat-row">
+      <span>${s.isBot?'🤖 ':''}${s.name}${isMe?' (you)':''}${isHostSeat?' <span class="dealer-badge">(host)</span>':''}</span>
+      ${controls}
+    </div>`;
+  }).join('');
+  const s = Object.assign({ allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet', openThreshold:71, scoringStyle:'value' }, room.settings||{});
+  const settingsBlock = state.isHost ? `
+    <div class="field"><label>Points target (first to reach it loses)</label><input type="number" id="mpPointsTarget" min="50" step="50" value="${room.pointsTarget||500}"></div>
+    <div class="field">
+      <label>Game mode</label>
+      <select id="gameMode">
+        <option value="complet" ${s.mode==='complet'?'selected':''}>Complet — arrange your whole hand and finish at once</option>
+        <option value="71" ${s.mode==='71'?'selected':''}>71 — open with enough joker-free points, then lay off your hand onto the table</option>
+      </select>
+    </div>
+    ${renderModeSettingsFields(s)}
+    <div class="btnrow"><button class="ghost" onclick="updateRoomSettings()">Save settings</button></div>
+  ` : `<p class="status-line">Mode: ${s.mode==='71'?'71':'Complet'} · Points target: ${room.pointsTarget||500} — the host can adjust settings.</p>`;
+
+  return `
+  <div class="header"><div class="eyebrow">Waiting room</div></div>
+  <div class="panel" style="text-align:center;">
+    <div class="room-code">${state.roomCode}</div>
+    <p class="status-line">Share this code — friends tap "Join a room" and enter it.</p>
+  </div>
+  <div class="panel">
+    <div class="zone-label">Players<span>${seats.filter(Boolean).length} / 7</span></div>
+    ${seatRows || '<div class="status-line">Nobody\'s here yet.</div>'}
+    ${state.isHost ? `<div class="btnrow"><button class="ghost" onclick="addBotSeat()">Add a bot</button></div>` : ''}
+  </div>
+  <div class="panel">${settingsBlock}</div>
+  <div class="btnrow">
+    ${state.isHost ? `<button class="primary" id="startOnlineBtn">Start game</button>` : `<p class="status-line">Waiting for the host to start the game…</p>`}
+    <button class="ghost" onclick="leaveRoom()">Leave room</button>
+  </div>`;
+}
+function attachOnlineWaitingHandlers(){
+  if(state.isHost){
+    const startBtn = document.getElementById('startOnlineBtn');
+    if(startBtn) startBtn.onclick = startOnlineGame;
+    const modeEl = document.getElementById('gameMode');
+    if(modeEl) modeEl.onchange = ()=>{
+      const s = Object.assign({}, room.settings||{}, { mode: modeEl.value });
+      room = Object.assign({}, room, { settings: s });
+      paintUI();
+    };
+  }
+}
+
+function renderModeSettingsFields(s){
+  const mode71 = s.mode==='71';
+  if(mode71){
+    return `
     <div class="grid2">
       <div class="field">
         <label>Minimum to open</label>
@@ -928,8 +1337,9 @@ function renderSetup(){
         <option value="no" ${!s.useJokers?'selected':''}>Without jokers (104 cards)</option>
       </select>
     </div>
-    <div class="notice-box">71 mode always deals 14 cards (dealer gets 15) and keeps the discard pile on its standard rules — those two settings only apply to Complet.</div>
-  ` : `
+    <div class="notice-box">71 mode always deals 14 cards (dealer gets 15) and keeps the discard pile on its standard rules — those two settings only apply to Complet.</div>`;
+  }
+  return `
     <div class="field">
       <label>Game settings</label>
       <label class="botcheck"><input type="checkbox" id="allowDiscardDraw" ${s.allowDiscardDraw?'checked':''}> Allow drawing from the discard pile every turn (like drawing from stock) — off by default</label>
@@ -949,8 +1359,20 @@ function renderSetup(){
           <option value="no" ${!s.useJokers?'selected':''}>Without jokers (104 cards)</option>
         </select>
       </div>
-    </div>
-  `;
+    </div>`;
+}
+function renderSetup(){
+  const n = state.numPlayers;
+  const s = state.settings;
+  const mode71 = s.mode==='71';
+  let nameFields = '';
+  for(let i=0;i<n;i++){
+    nameFields += `<div class="field"><label>Player ${i+1}</label>
+      <input type="text" id="name-${i}" value="${state.names[i] || 'Player '+(i+1)}">
+      <label class="botcheck"><input type="checkbox" id="bot-${i}" ${state.bots[i]?'checked':''}> Bot-controlled</label>
+      </div>`;
+  }
+  const modeSettingsHTML = renderModeSettingsFields(s);
   return `
   <div class="header">
     <div class="eyebrow">Rami · رامي</div>
@@ -990,6 +1412,8 @@ function renderSetup(){
         <li><strong>Suivie</strong>: 3+ consecutive cards, same suit — Ace can sit low (A-2-3…) or high (…Q-K-A), but a run can never wrap around through K-A-2. <strong>Trio</strong>: 3 or 4 cards, same rank, all different suits. A combination can never contain more than one joker.</li>
         <li><strong>Complet mode:</strong> your finished hand needs at least one suivie and one trio built with no joker at all — arrange all your other cards into valid groups and hit Finish. Once the tournante is gone, you can still pick up the top discard purely to try to finish immediately (it can sit anywhere in your groups, but you still need a joker-free trio and suivie built from the rest of your cards). Every other player takes 100 points when someone finishes (200 if the closing card was a joker); hitting Finish wrongly costs the finisher 50 points.</li>
         <li><strong>71 mode:</strong> build a trio and a suivie, both joker-free, worth more than the table's current threshold (your chosen minimum-to-open, 71 or 51, to start) — tap "Lay Down" to place them on the table and open. Once you're open, lay down any further valid groups whenever you like, and drag cards between your hand and any combination on the table (yours or another player's) — you can add to a combo or pull a card off it and put it elsewhere, as long as every combination on the table stays a valid trio/suivie afterward. Once the tournante is gone, you may still pick up the top discard if you already have (or have already proven, by opening) a joker-free trio and suivie — meant to be laid down or closed with that same turn, or returned if you can't. Each new player who wants to open must beat the point total the last opener used. Close by getting down to your last card and tapping Close: everyone else who opened is scored on the cards left in their hand — either card value (2–10 face value, J/Q/K/paired-aces = 10, a lone Ace = 1) or a flat 10 per card, whichever you chose — and anyone who never opened takes a flat 100, doubled for everyone if you closed with a joker.</li>
+        <li><strong>Closing with a Complet in 71 mode:</strong> if your whole hand already forms a full valid finish in one shot — a joker-free trio, a joker-free suivie, everything else grouped, one card left to throw face down — you can hit "Close (Complet)" to end the round immediately, even if you never opened or laid a single card on the table. This is also the only way to close with a joker as your last card (which doubles everyone else's points) — the normal gradual Close never allows a joker as the final card.</li>
+        <li>If you're down to your very last card, you can't pick up the discard pile to try to end your turn with it — you have to draw from the stock instead.</li>
         <li><strong>Scoring:</strong> whoever first reaches the points target loses the game.</li>
       </ul>
     </details>
@@ -1109,6 +1533,18 @@ function renderScoreboard(){
   return `<div class="zone" style="margin-top:10px;"><div class="zone-label">Scoreboard</div>${rows}</div>`;
 }
 
+function renderRoundOverButtons(){
+  if(state.online && !state.isHost){
+    return `<div class="btnrow">
+      <p class="status-line">Waiting for the host to deal the next round…</p>
+      <button class="ghost" onclick="backToSetup()">Leave room</button>
+    </div>`;
+  }
+  return `<div class="btnrow">
+    <button class="primary" onclick="newRound()">Deal next round</button>
+    <button class="ghost" onclick="backToSetup()">${state.online ? 'Leave room' : 'New game'}</button>
+  </div>`;
+}
 function renderResultScreen(){
   const mode71 = state.settings && state.settings.mode==='71';
   if(state.gameOver){
@@ -1132,7 +1568,7 @@ function renderResultScreen(){
       ${roundNote}
       <p class="status-line">🏆 ${champion.name} finishes with the lowest score (${champion.score||0} pts).</p>
       ${renderScoreboard()}
-      <div class="btnrow"><button class="primary" onclick="backToSetup()">New game</button></div>
+      <div class="btnrow"><button class="primary" onclick="backToSetup()">${state.online ? 'Leave room' : 'New game'}</button></div>
     </div>`;
   }
 
@@ -1155,10 +1591,7 @@ function renderResultScreen(){
       ${winnerText}
       ${hands}
       ${renderScoreboard()}
-      <div class="btnrow">
-        <button class="primary" onclick="newRound()">Deal next round</button>
-        <button class="ghost" onclick="backToSetup()">New game</button>
-      </div>
+      ${renderRoundOverButtons()}
     </div>
     ${renderTableBoard(false)}`;
   }
@@ -1189,15 +1622,12 @@ function renderResultScreen(){
     ${winnerText}
     ${hands}
     ${renderScoreboard()}
-    <div class="btnrow">
-      <button class="primary" onclick="newRound()">Deal next round</button>
-      <button class="ghost" onclick="backToSetup()">New game</button>
-    </div>
+    ${renderRoundOverButtons()}
   </div>`;
 }
 
 function renderTable(){
-  const viewIdx = state.hasBot ? state.viewIndex : state.currentIndex;
+  const viewIdx = state.online ? state.mySeatIndex : (state.hasBot ? state.viewIndex : state.currentIndex);
   const player = state.players[viewIdx];
   const isTurn = state.currentIndex === viewIdx;
   const waiting = !isTurn;
@@ -1257,7 +1687,7 @@ function renderTable(){
   let statusLine;
   if(waiting){
     const actor = state.players[state.currentIndex];
-    statusLine = `🤖 ${actor.name} is playing — the stock and discard are locked until they finish.`;
+    statusLine = `${actor.isBot?'🤖 ':''}${actor.name} is playing — the stock and discard are locked until they finish.`;
   }
   else if(state.phase==='DRAW') statusLine = tournanteEligible
     ? 'Tap the stock to draw a fresh card, or tap the tournante to take it.'
@@ -1271,7 +1701,7 @@ function renderTable(){
     : 'You picked up the discard to try to win. Finish now, or return it.';
   else if(mode71) statusLine = player.opened
     ? 'You\'re in — lay down more groups, drag cards onto any combination on the table, or close once you\'re down to your last card.'
-    : `Build a trio and a suivie, both without a joker, worth more than ${state.requiredThreshold-1} points, then tap Lay Down to open.`;
+    : `Build a trio and a suivie, both without a joker, worth more than ${state.requiredThreshold-1} points, then tap Lay Down to open — or close instantly with "Close (Complet)" if your whole hand already forms a full finish.`;
   else statusLine = 'Drag cards to arrange them exactly where you want — or tap a card, then tap another card or a zone.';
 
   const newGroupZone = canArrange ? `<div class="zone new-group" ondragover="allowDrop(event)" ondrop="onDropZone(event,'newgroup')" onclick="zoneClick('newgroup')">+ drag or tap a card here to start a new group</div>` : '';
@@ -1283,6 +1713,7 @@ function renderTable(){
       actionButtons = `<div class="btnrow">
         <button class="primary" onclick="tryOpenAndLayDown()">${player.opened ? 'Lay Down' : 'Open (Lay Down)'}</button>
         <button class="primary" onclick="closeRound71()" ${closeEnabled?'':'disabled'}>Close</button>
+        <button class="primary" onclick="tryCompletCloseIn71()" title="Close instantly if your whole hand is already a full Complet finish — this is the only way to close with a joker as your last card">Close (Complet)</button>
         ${state.discardWinAttempt ? `<button class="ghost" onclick="returnDiscardCard()">Return picked-up card</button>` : ''}
         <button class="ghost" onclick="sortHand('rank')">Sort by rank</button>
         <button class="ghost" onclick="sortHand('suit')">Sort by suit</button></div>`;
