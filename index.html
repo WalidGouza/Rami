@@ -237,9 +237,31 @@ function pushGameState(){
   SYNC_KEYS.forEach(k=>{ if(state[k]!==undefined) payload[k]=state[k]; });
   fbDb.ref('rooms/'+state.roomCode+'/game').set(payload).catch(err=>console.error('Rami sync error:', err));
 }
+/* Firebase Realtime Database silently drops empty arrays/objects when you write them (and can turn
+   a sparse array into a plain object) — so anything that happened to be empty at sync time comes
+   back as `undefined` instead of `[]`. This repairs every array field the UI expects to exist. */
+function asArray(v){
+  if(Array.isArray(v)) return v;
+  if(v && typeof v==='object') return Object.keys(v).sort((a,b)=>a-b).map(k=>v[k]);
+  return [];
+}
+function normalizeGameState(){
+  state.discardPile = asArray(state.discardPile);
+  state.stock = asArray(state.stock);
+  state.table = asArray(state.table).map(g=>asArray(g));
+  state.lastRoundDeltas = asArray(state.lastRoundDeltas);
+  if(!state.allCardsById || typeof state.allCardsById!=='object') state.allCardsById = {};
+  (state.players||[]).forEach(p=>{
+    p.hand = asArray(p.hand);
+    if(!p.arrangement) p.arrangement = { pool:[], groups:[] };
+    p.arrangement.pool = asArray(p.arrangement.pool);
+    p.arrangement.groups = asArray(p.arrangement.groups).map(g=>asArray(g));
+  });
+}
 function onRemoteGameUpdate(remoteGame){
   if(!remoteGame) return;
   SYNC_KEYS.forEach(k=>{ if(remoteGame[k]!==undefined) state[k]=remoteGame[k]; });
+  normalizeGameState();
   const idx = state.players ? state.players.findIndex(p=>p.uid===myUid) : -1;
   if(idx>-1) state.mySeatIndex = idx;
   state.selectedCardId = null;
@@ -1410,7 +1432,7 @@ function renderSetup(){
         <li>Tap the stock (or the discard pile, when it's drawable) to draw. Drag cards to reorder your hand and build groups exactly where you want them — or select a card, then tap another card or a zone to move it there.</li>
         <li>To discard, drag a card onto the discard pile — or select a card and tap the discard pile.</li>
         <li><strong>Suivie</strong>: 3+ consecutive cards, same suit — Ace can sit low (A-2-3…) or high (…Q-K-A), but a run can never wrap around through K-A-2. <strong>Trio</strong>: 3 or 4 cards, same rank, all different suits. A combination can never contain more than one joker.</li>
-        <li><strong>Complet mode:</strong> your finished hand needs at least one suivie and one trio built with no joker at all — arrange all your other cards into valid groups and hit Finish. Once the tournante is gone, you can still pick up the top discard purely to try to finish immediately (it can sit anywhere in your groups, but you still need a joker-free trio and suivie built from the rest of your cards). Every other player takes 100 points when someone finishes (200 if the closing card was a joker); hitting Finish wrongly costs the finisher 50 points.</li>
+        <li><strong>Complet mode:</strong> your finished hand needs at least one suivie and one trio built with no joker at all — arrange all your other cards into valid groups and hit Finish. Once the tournante is gone, you can still pick up the top discard purely to try to finish immediately (it can sit anywhere in your groups, but you still need a joker-free trio and suivie built from the rest of your cards). Every other player takes 100 points when someone finishes (200 if the closing card was a joker); hitting Finish wrongly costs the finisher 51 points.</li>
         <li><strong>71 mode:</strong> build a trio and a suivie, both joker-free, worth more than the table's current threshold (your chosen minimum-to-open, 71 or 51, to start) — tap "Lay Down" to place them on the table and open. Once you're open, lay down any further valid groups whenever you like, and drag cards between your hand and any combination on the table (yours or another player's) — you can add to a combo or pull a card off it and put it elsewhere, as long as every combination on the table stays a valid trio/suivie afterward. Once the tournante is gone, you may still pick up the top discard if you already have (or have already proven, by opening) a joker-free trio and suivie — meant to be laid down or closed with that same turn, or returned if you can't. Each new player who wants to open must beat the point total the last opener used. Close by getting down to your last card and tapping Close: everyone else who opened is scored on the cards left in their hand — either card value (2–10 face value, J/Q/K/paired-aces = 10, a lone Ace = 1) or a flat 10 per card, whichever you chose — and anyone who never opened takes a flat 100, doubled for everyone if you closed with a joker.</li>
         <li><strong>Closing with a Complet in 71 mode:</strong> if your whole hand already forms a full valid finish in one shot — a joker-free trio, a joker-free suivie, everything else grouped, one card left to throw face down — you can hit "Close (Complet)" to end the round immediately, even if you never opened or laid a single card on the table. This is also the only way to close with a joker as your last card (which doubles everyone else's points) — the normal gradual Close never allows a joker as the final card.</li>
         <li>If you're down to your very last card, you can't pick up the discard pile to try to end your turn with it — you have to draw from the stock instead.</li>
