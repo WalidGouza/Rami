@@ -558,6 +558,14 @@ function backToSetup(){
 /* ============================= HELPERS ============================= */
 function currentPlayer(){ return state.players[state.currentIndex]; }
 function currentArrangement(){ return currentPlayer().arrangement; }
+/* The player whose hand is showing on THIS screen — always "me" online, always the visible human
+   in a bot game, otherwise whoever's turn it is. Distinct from currentPlayer() because you should
+   be able to reorganize your own hand even when it isn't your turn. */
+function viewedPlayer(){
+  if(state.online) return state.players[state.mySeatIndex];
+  if(state.hasBot) return state.players[state.viewIndex];
+  return currentPlayer();
+}
 function removeFromArrangement(arr, id){
   let idx = arr.pool.indexOf(id);
   if(idx>-1){ arr.pool.splice(idx,1); return; }
@@ -746,25 +754,25 @@ function moveCardToTable(id, destIdx, beforeId, fromTable, sourceIdx, player){
   render();
 }
 
-/* zoneType: 'pool' | 'group' | 'newgroup' | 'throw' | 'table'. beforeId: insert before this card id, or null/undefined to append at end. */
+/* zoneType: 'pool' | 'group' | 'newgroup' | 'throw' | 'table'. beforeId: insert before this card id, or null/undefined to append at end.
+   Only 'throw' (ending your turn) and anything touching the shared table require it to actually be
+   your turn — reorganizing cards already in your own hand is allowed any time. */
 function performMove(id, zoneType, idx, beforeId){
-  if(state.phase!=='ARRANGE' || blockedForMe()) return;
-  if(id===beforeId) return;
-  const player = currentPlayer();
-  if(zoneType==='throw'){ doDiscard(id); return; }
-
+  if(state.phase==='RESULT' || id===beforeId) return;
   const sourceTableIdx = findTableComboIndex(id);
   const fromTable = sourceTableIdx>-1;
   const touchesTable = fromTable || zoneType==='table';
-  if(touchesTable){
+
+  let player;
+  if(zoneType==='throw' || touchesTable){
+    // ending your turn, or anything touching the shared table: must actually be your turn
+    if(state.phase!=='ARRANGE' || blockedForMe()) return;
+    player = currentPlayer();
+    if(zoneType==='throw'){ doDiscard(id); return; }
     if(state.settings.mode!=='71') return; // the table only exists in 71 mode
     if(!player.opened){ state.errorMsg = 'Lay down your own combination to open before you can touch the table.'; render(); return; }
-  }
-
-  if(zoneType==='table'){ moveCardToTable(id, idx, beforeId, fromTable, sourceTableIdx, player); return; }
-
-  const arr = player.arrangement;
-  if(fromTable){
+    if(zoneType==='table'){ moveCardToTable(id, idx, beforeId, fromTable, sourceTableIdx, player); return; }
+    // picking a card up off the table, into your own hand
     const check = canRemoveFromTable(sourceTableIdx, id);
     if(!check.ok){ state.errorMsg = 'Removing that card would leave an invalid combination on the table — try somewhere else instead.'; render(); return; }
     const srcCombo = state.table[sourceTableIdx];
@@ -774,8 +782,12 @@ function performMove(id, zoneType, idx, beforeId){
     const card = state.allCardsById[id];
     if(card && !player.hand.some(c=>c.id===id)) player.hand.push(card);
   } else {
-    removeFromArrangement(arr, id);
+    // reorganizing a card already in your own hand: allowed any time
+    player = viewedPlayer();
+    removeFromArrangement(player.arrangement, id);
   }
+
+  const arr = player.arrangement;
   let list;
   if(zoneType==='pool'){ list = arr.pool; }
   else if(zoneType==='group'){ list = arr.groups[idx]; }
@@ -802,7 +814,7 @@ function onDropOnCard(ev, zoneType, idx, beforeId){ ev.preventDefault(); ev.stop
 /* click-to-move */
 function onCardClick(ev, zoneType, idx, id){
   ev.stopPropagation();
-  if(state.phase!=='ARRANGE' || blockedForMe()) return;
+  if(state.phase==='RESULT') return;
   if(state.selectedCardId && state.selectedCardId!==id){
     const sel = state.selectedCardId; state.selectedCardId=null;
     performMove(sel, zoneType, idx, id);
@@ -812,15 +824,15 @@ function onCardClick(ev, zoneType, idx, id){
   render();
 }
 function zoneClick(zoneType, idx){
-  if(state.phase!=='ARRANGE' || blockedForMe()) return;
+  if(state.phase==='RESULT') return;
   if(!state.selectedCardId) return;
   const id = state.selectedCardId; state.selectedCardId = null;
   performMove(id, zoneType, idx, null);
 }
 
 function disbandGroup(idx){
-  if(state.phase!=='ARRANGE' || blockedForMe()) return;
-  const arr = currentArrangement();
+  if(state.phase==='RESULT') return;
+  const arr = viewedPlayer().arrangement;
   arr.pool.push(...arr.groups[idx]);
   arr.groups.splice(idx,1);
   render();
@@ -1006,8 +1018,8 @@ function tryFinish(){
 }
 
 function sortHand(mode){
-  if(state.phase!=='ARRANGE' || blockedForMe()) return;
-  const player = currentPlayer();
+  if(state.phase==='RESULT') return;
+  const player = viewedPlayer();
   const cardsById = {}; player.hand.forEach(c=>cardsById[c.id]=c);
   const suitOrder = {'♠':0,'♥':1,'♦':2,'♣':3};
   player.arrangement.pool.sort((ida,idb)=>{
@@ -1432,7 +1444,7 @@ function renderSetup(){
         <li>Tap the stock (or the discard pile, when it's drawable) to draw. Drag cards to reorder your hand and build groups exactly where you want them — or select a card, then tap another card or a zone to move it there.</li>
         <li>To discard, drag a card onto the discard pile — or select a card and tap the discard pile.</li>
         <li><strong>Suivie</strong>: 3+ consecutive cards, same suit — Ace can sit low (A-2-3…) or high (…Q-K-A), but a run can never wrap around through K-A-2. <strong>Trio</strong>: 3 or 4 cards, same rank, all different suits. A combination can never contain more than one joker.</li>
-        <li><strong>Complet mode:</strong> your finished hand needs at least one suivie and one trio built with no joker at all — arrange all your other cards into valid groups and hit Finish. Once the tournante is gone, you can still pick up the top discard purely to try to finish immediately (it can sit anywhere in your groups, but you still need a joker-free trio and suivie built from the rest of your cards). Every other player takes 100 points when someone finishes (200 if the closing card was a joker); hitting Finish wrongly costs the finisher 51 points.</li>
+        <li><strong>Complet mode:</strong> your finished hand needs at least one suivie and one trio built with no joker at all — arrange all your other cards into valid groups and hit Finish. Once the tournante is gone, you can still pick up the top discard purely to try to finish immediately (it can sit anywhere in your groups, but you still need a joker-free trio and suivie built from the rest of your cards). Every other player takes 100 points when someone finishes (200 if the closing card was a joker); hitting Finish wrongly costs the finisher 50 points.</li>
         <li><strong>71 mode:</strong> build a trio and a suivie, both joker-free, worth more than the table's current threshold (your chosen minimum-to-open, 71 or 51, to start) — tap "Lay Down" to place them on the table and open. Once you're open, lay down any further valid groups whenever you like, and drag cards between your hand and any combination on the table (yours or another player's) — you can add to a combo or pull a card off it and put it elsewhere, as long as every combination on the table stays a valid trio/suivie afterward. Once the tournante is gone, you may still pick up the top discard if you already have (or have already proven, by opening) a joker-free trio and suivie — meant to be laid down or closed with that same turn, or returned if you can't. Each new player who wants to open must beat the point total the last opener used. Close by getting down to your last card and tapping Close: everyone else who opened is scored on the cards left in their hand — either card value (2–10 face value, J/Q/K/paired-aces = 10, a lone Ace = 1) or a flat 10 per card, whichever you chose — and anyone who never opened takes a flat 100, doubled for everyone if you closed with a joker.</li>
         <li><strong>Closing with a Complet in 71 mode:</strong> if your whole hand already forms a full valid finish in one shot — a joker-free trio, a joker-free suivie, everything else grouped, one card left to throw face down — you can hit "Close (Complet)" to end the round immediately, even if you never opened or laid a single card on the table. This is also the only way to close with a joker as your last card (which doubles everyone else's points) — the normal gradual Close never allows a joker as the final card.</li>
         <li>If you're down to your very last card, you can't pick up the discard pile to try to end your turn with it — you have to draw from the stock instead.</li>
@@ -1657,7 +1669,8 @@ function renderTable(){
   const cardsById = {}; player.hand.forEach(c=>cardsById[c.id]=c);
   const topDiscard = state.discardPile[state.discardPile.length-1];
   const canDraw = isTurn && state.phase==='DRAW';
-  const canArrange = isTurn && state.phase==='ARRANGE';
+  const canCommit = isTurn && state.phase==='ARRANGE';
+  const canOrganize = state.phase!=='RESULT';
   const mode71 = state.settings.mode==='71';
   const generalDiscardDraw = state.settings.allowDiscardDraw;
   const tournanteEligible = !generalDiscardDraw && canDraw && state.tournantePending && state.currentIndex===state.nextAfterDealer && state.discardPile.length>0;
@@ -1672,8 +1685,8 @@ function renderTable(){
   if(tournanteEligible) discardClick = 'drawTournante()';
   else if(freeDiscardDrawable) discardClick = 'drawFromDiscardFree()';
   else if(discardWinPossible) discardClick = 'attemptDiscardWinDraw()';
-  else if(canArrange) discardClick = "zoneClick('throw')";
-  const discardDropAttrs = canArrange ? `ondragover="allowDrop(event)" ondrop="onDropZone(event,'throw')"` : '';
+  else if(canCommit) discardClick = "zoneClick('throw')";
+  const discardDropAttrs = canCommit ? `ondragover="allowDrop(event)" ondrop="onDropZone(event,'throw')"` : '';
   const discardPileHTML = `<div ${discardDropAttrs} onclick="${discardClick}" style="cursor:${discardClick?'pointer':'default'}">${topDiscard ? cardHTML(topDiscard,{}) : emptyCardHTML()}</div>`;
 
   let discardCountText;
@@ -1686,7 +1699,7 @@ function renderTable(){
   const poolCards = arr.pool.map(id=>cardsById[id]).filter(Boolean);
   const poolHTML = poolCards.map(c=>cardHTML(c,{
     selected: state.selectedCardId===c.id, pickup: c.id===state.discardWinAttempt,
-    clickable: canArrange, draggable: canArrange, dropTarget: canArrange, onCardClick: canArrange, zoneType:'pool'
+    clickable: canOrganize, draggable: canOrganize, dropTarget: canOrganize, onCardClick: canOrganize, zoneType:'pool'
   })).join('');
 
   const groupsHTML = arr.groups.map((g,i)=>{
@@ -1697,10 +1710,10 @@ function renderTable(){
     const tagText = info.trio ? ('Trio'+(info.hasJoker?' · joker':'')) : info.suivie ? ('Suivie'+(info.hasJoker?' · joker':'')) : 'Not valid yet';
     const cardsHTML = cards.map(c=>cardHTML(c,{
       selected: state.selectedCardId===c.id, pickup: c.id===state.discardWinAttempt,
-      clickable: canArrange, draggable: canArrange, dropTarget: canArrange, onCardClick: canArrange, zoneType:'group', zoneIdx:i
+      clickable: canOrganize, draggable: canOrganize, dropTarget: canOrganize, onCardClick: canOrganize, zoneType:'group', zoneIdx:i
     })).join('');
-    const disbandBtn = canArrange ? `<button class="disband" onclick="event.stopPropagation(); disbandGroup(${i})">Ungroup</button>` : '';
-    return `<div class="zone" ${canArrange?`ondragover="allowDrop(event)" ondrop="onDropZone(event,'group',${i})" onclick="zoneClick('group',${i})"`:''}>
+    const disbandBtn = canOrganize ? `<button class="disband" onclick="event.stopPropagation(); disbandGroup(${i})">Ungroup</button>` : '';
+    return `<div class="zone" ${canOrganize?`ondragover="allowDrop(event)" ondrop="onDropZone(event,'group',${i})" onclick="zoneClick('group',${i})"`:''}>
       <div class="zone-label"><span class="tag ${tagClass}">${tagText}</span>${disbandBtn}</div>
       <div class="zone-cards">${cardsHTML}</div>
     </div>`;
@@ -1709,7 +1722,7 @@ function renderTable(){
   let statusLine;
   if(waiting){
     const actor = state.players[state.currentIndex];
-    statusLine = `${actor.isBot?'🤖 ':''}${actor.name} is playing — the stock and discard are locked until they finish.`;
+    statusLine = `${actor.isBot?'🤖 ':''}${actor.name} is playing — the stock and discard are locked until they finish. You can still rearrange your own hand.`;
   }
   else if(state.phase==='DRAW') statusLine = tournanteEligible
     ? 'Tap the stock to draw a fresh card, or tap the tournante to take it.'
@@ -1726,22 +1739,22 @@ function renderTable(){
     : `Build a trio and a suivie, both without a joker, worth more than ${state.requiredThreshold-1} points, then tap Lay Down to open — or close instantly with "Close (Complet)" if your whole hand already forms a full finish.`;
   else statusLine = 'Drag cards to arrange them exactly where you want — or tap a card, then tap another card or a zone.';
 
-  const newGroupZone = canArrange ? `<div class="zone new-group" ondragover="allowDrop(event)" ondrop="onDropZone(event,'newgroup')" onclick="zoneClick('newgroup')">+ drag or tap a card here to start a new group</div>` : '';
+  const newGroupZone = canOrganize ? `<div class="zone new-group" ondragover="allowDrop(event)" ondrop="onDropZone(event,'newgroup')" onclick="zoneClick('newgroup')">+ drag or tap a card here to start a new group</div>` : '';
 
   let actionButtons = '';
-  if(canArrange){
+  if(canOrganize){
     if(mode71){
-      const closeEnabled = player.opened && arr.groups.length===0 && arr.pool.length===1;
+      const closeEnabled = canCommit && player.opened && arr.groups.length===0 && arr.pool.length===1;
       actionButtons = `<div class="btnrow">
-        <button class="primary" onclick="tryOpenAndLayDown()">${player.opened ? 'Lay Down' : 'Open (Lay Down)'}</button>
+        <button class="primary" onclick="tryOpenAndLayDown()" ${canCommit?'':'disabled'}>${player.opened ? 'Lay Down' : 'Open (Lay Down)'}</button>
         <button class="primary" onclick="closeRound71()" ${closeEnabled?'':'disabled'}>Close</button>
-        <button class="primary" onclick="tryCompletCloseIn71()" title="Close instantly if your whole hand is already a full Complet finish — this is the only way to close with a joker as your last card">Close (Complet)</button>
-        ${state.discardWinAttempt ? `<button class="ghost" onclick="returnDiscardCard()">Return picked-up card</button>` : ''}
+        <button class="primary" onclick="tryCompletCloseIn71()" ${canCommit?'':'disabled'} title="Close instantly if your whole hand is already a full Complet finish — this is the only way to close with a joker as your last card">Close (Complet)</button>
+        ${(canCommit && state.discardWinAttempt) ? `<button class="ghost" onclick="returnDiscardCard()">Return picked-up card</button>` : ''}
         <button class="ghost" onclick="sortHand('rank')">Sort by rank</button>
         <button class="ghost" onclick="sortHand('suit')">Sort by suit</button></div>`;
     } else {
-      actionButtons = `<div class="btnrow"><button class="primary" onclick="tryFinish()">Finish</button>
-        ${state.discardWinAttempt ? `<button class="ghost" onclick="returnDiscardCard()">Return picked-up card</button>` : ''}
+      actionButtons = `<div class="btnrow"><button class="primary" onclick="tryFinish()" ${canCommit?'':'disabled'}>Finish</button>
+        ${(canCommit && state.discardWinAttempt) ? `<button class="ghost" onclick="returnDiscardCard()">Return picked-up card</button>` : ''}
         <button class="ghost" onclick="sortHand('rank')">Sort by rank</button>
         <button class="ghost" onclick="sortHand('suit')">Sort by suit</button></div>`;
     }
@@ -1750,14 +1763,14 @@ function renderTable(){
   return `
   <div class="header"><div class="eyebrow">Rami</div><h1 style="font-size:22px;">${player.name}'s hand</h1></div>
   ${renderPlayersBar()}
-  ${renderTableBoard(canArrange && mode71 && player.opened)}
+  ${renderTableBoard(canCommit && mode71 && player.opened)}
   <div class="panel">
     <div class="table-area">
       <div class="pile"><div class="pile-label">Stock</div>${stockPileHTML}<div class="count">${state.stock.length} left</div></div>
       <div class="pile"><div class="pile-label">Discard</div>${discardPileHTML}<div class="count">${discardCountText}</div></div>
     </div>
     <div class="status-line">${statusLine}</div>
-    <div class="zone pool-zone" ${canArrange?`ondragover="allowDrop(event)" ondrop="onDropZone(event,'pool')" onclick="zoneClick('pool')"`:''}>
+    <div class="zone pool-zone" ${canOrganize?`ondragover="allowDrop(event)" ondrop="onDropZone(event,'pool')" onclick="zoneClick('pool')"`:''}>
       <div class="zone-label">Hand<span>${arr.pool.length} loose</span></div>
       <div class="zone-cards">${poolHTML || '<span style="opacity:.5;font-size:12px;">empty</span>'}</div>
     </div>
