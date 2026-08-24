@@ -155,6 +155,53 @@ window.addEventListener('error', function(e){
 window.addEventListener('unhandledrejection', function(e){
   console.error('Unhandled promise rejection:', e.reason);
 });
+
+/* ============================= TURN ALERT (sound + vibration) ============================= */
+/* A short synthesized chime — no audio file to host or load. Browsers require a user gesture
+   before audio can play, so the AudioContext is created/resumed on the very first click anywhere
+   in the app (almost always the first thing a player does), well before any alert is needed. */
+let audioCtx = null;
+function unlockAudio(){
+  try{
+    if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    else if(audioCtx.state==='suspended') audioCtx.resume().catch(()=>{});
+  }catch(e){ /* Web Audio unsupported — sound just won't play, vibration still can */ }
+}
+document.addEventListener('click', unlockAudio, { once:true });
+
+function playTurnAlert(){
+  try{ if(navigator.vibrate) navigator.vibrate([120,60,120]); }catch(e){}
+  try{
+    unlockAudio();
+    if(!audioCtx) return;
+    const now = audioCtx.currentTime;
+    [{freq:880, start:0, dur:0.14}, {freq:1175, start:0.15, dur:0.22}].forEach(n=>{
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = n.freq;
+      gain.gain.setValueAtTime(0.0001, now+n.start);
+      gain.gain.exponentialRampToValueAtTime(0.28, now+n.start+0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now+n.start+n.dur);
+      osc.connect(gain); gain.connect(audioCtx.destination);
+      osc.start(now+n.start);
+      osc.stop(now+n.start+n.dur+0.02);
+    });
+  }catch(e){ console.error('Turn alert sound failed:', e); }
+}
+/* Fires once per genuine "it's now your turn" transition — not on every re-render while it's
+   already your turn (dragging cards, etc. shouldn't keep re-triggering it). */
+let lastTurnAlertKey = null;
+function maybeAlertMyTurn(){
+  if(state.screen!=='GAME' || !state.players || state.phase==='RESULT' || state.phase==='PASS') return;
+  const viewIdx = state.online ? state.mySeatIndex : (state.hasBot ? state.viewIndex : state.currentIndex);
+  const me = state.players[viewIdx];
+  const isMyTurnNow = state.currentIndex===viewIdx && me && !me.isBot;
+  const key = (state.roomCode||'local') + ':' + state.currentIndex;
+  if(isMyTurnNow && key!==lastTurnAlertKey) playTurnAlert();
+  lastTurnAlertKey = key;
+}
+
 /* ============================= DATA & HELPERS ============================= */
 const SUITS = ['♠','♥','♦','♣'];
 const RANK_LABEL = {1:'A',11:'J',12:'Q',13:'K'};
@@ -230,6 +277,20 @@ const SYNC_KEYS = ['players','dealerIndex','currentIndex','hasBot','pointsTarget
   'settings','stock','discardPile','tournantePending','nextAfterDealer','table','requiredThreshold',
   'allCardsById','phase','pendingAfterPass','discardWinAttempt','winner','resultMsg','finishWasJoker',
   'roundPoints','lastRoundDeltas'];
+/* Firebase Realtime Database deletes any key whose value is null, undefined, an empty array, or an
+   empty object when you write it. Our payload legitimately hits every one of those cases (an empty
+   discard pile at the start of a round, discardWinAttempt going back to null, etc.) — so the field
+   simply won't exist in the next snapshot. If we only overwrite state for keys that ARE present,
+   every client keeps whatever stale value it had before, which is exactly how a leftover discard
+   card or a stuck discardWinAttempt survives into the next round/turn. These are the correct
+   "nothing here" defaults for every synced field, used whenever Firebase omits it. */
+const SYNC_DEFAULTS = {
+  players: [], dealerIndex: 0, currentIndex: 0, hasBot: false, pointsTarget: 501, gameOver: false,
+  settings: {}, stock: [], discardPile: [], tournantePending: false, nextAfterDealer: 0, table: [],
+  requiredThreshold: 71, allCardsById: {}, phase: 'ARRANGE', pendingAfterPass: 'ARRANGE',
+  discardWinAttempt: null, winner: null, resultMsg: null, finishWasJoker: false, roundPoints: null,
+  lastRoundDeltas: [],
+};
 
 function pushGameState(){
   if(!fbDb || !state.roomCode) return;
@@ -258,9 +319,17 @@ function normalizeGameState(){
     p.arrangement.groups = asArray(p.arrangement.groups).map(g=>asArray(g));
   });
 }
+function freshDefault(k){
+  const d = SYNC_DEFAULTS[k];
+  if(Array.isArray(d)) return [];
+  if(d && typeof d==='object') return {};
+  return d; // primitive or null — safe to reuse as-is
+}
 function onRemoteGameUpdate(remoteGame){
   if(!remoteGame) return;
-  SYNC_KEYS.forEach(k=>{ if(remoteGame[k]!==undefined) state[k]=remoteGame[k]; });
+  SYNC_KEYS.forEach(k=>{
+    state[k] = (remoteGame[k]!==undefined) ? remoteGame[k] : freshDefault(k);
+  });
   normalizeGameState();
   const idx = state.players ? state.players.findIndex(p=>p.uid===myUid) : -1;
   if(idx>-1) state.mySeatIndex = idx;
@@ -278,7 +347,7 @@ function createRoom(name){
     status: 'waiting',
     createdAt: firebase.database.ServerValue.TIMESTAMP,
     seats: [seat],
-    pointsTarget: 500,
+    pointsTarget: 501,
     settings: { allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet', openThreshold:71, scoringStyle:'value' },
   }).then(()=>{
     localStorage.setItem('rami_room', code);
@@ -354,7 +423,7 @@ function removeSeat(seatIdx){
 function updateRoomSettings(){
   if(!room || !state.isHost) return;
   const ptEl = document.getElementById('mpPointsTarget');
-  const pointsTarget = ptEl ? (parseInt(ptEl.value,10)||500) : 500;
+  const pointsTarget = ptEl ? (parseInt(ptEl.value,10)||501) : 501;
   const settings = readSettingsFromDom();
   fbDb.ref('rooms/'+state.roomCode).update({ pointsTarget, settings });
 }
@@ -366,7 +435,7 @@ function startOnlineGame(){
   state.players = players;
   state.dealerIndex = 0; state.currentIndex = 0;
   state.hasBot = players.some(p=>p.isBot);
-  state.pointsTarget = room.pointsTarget || 500;
+  state.pointsTarget = room.pointsTarget || 501;
   state.gameOver = false;
   state.settings = Object.assign({ allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet', openThreshold:71, scoringStyle:'value' }, room.settings||{});
   state.online = true;
@@ -495,7 +564,7 @@ function standaloneValue(card){
 
 /* ============================= STATE ============================= */
 let state = {};
-function newSetupState(){ return { screen:'SETUP', numPlayers:4, names:['Player 1','Player 2','Player 3','Player 4'], bots:[false,false,false,false], pointsTarget:500, settings:{ allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet', openThreshold:71, scoringStyle:'value' } }; }
+function newSetupState(){ return { screen:'SETUP', numPlayers:4, names:['Player 1','Player 2','Player 3','Player 4'], bots:[false,false,false,false], pointsTarget:501, settings:{ allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet', openThreshold:71, scoringStyle:'value' } }; }
 function newLandingState(){ return { screen:'LANDING' }; }
 state = newLandingState();
 
@@ -505,7 +574,7 @@ function startGame(numPlayers, names, bots, pointsTarget, settings){
   if(viewIndex===-1) viewIndex = 0;
   state = {
     screen:'GAME', players, dealerIndex:0, currentIndex:0, hasBot: players.some(p=>p.isBot), viewIndex, online:false,
-    pointsTarget: (Number.isFinite(pointsTarget) && pointsTarget>0) ? pointsTarget : 500, gameOver:false,
+    pointsTarget: (Number.isFinite(pointsTarget) && pointsTarget>0) ? pointsTarget : 501, gameOver:false,
     settings: Object.assign({ allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet', openThreshold:71, scoringStyle:'value' }, settings||{}),
     stock:[], discardPile:[], tournantePending:true, nextAfterDealer: 1 % numPlayers,
     table:[], requiredThreshold:71, allCardsById:{},
@@ -516,6 +585,7 @@ function startGame(numPlayers, names, bots, pointsTarget, settings){
 }
 
 function dealGame(){
+  lastTurnAlertKey = null;
   const handSize = state.settings.handSize;
   const deck = shuffle(buildDeck(state.settings.useJokers));
   state.allCardsById = {}; deck.forEach(c=>{ state.allCardsById[c.id]=c; });
@@ -667,9 +737,17 @@ function returnDiscardCard(){
   if(blockedForMe()) return;
   const player = currentPlayer();
   const id = state.discardWinAttempt;
-  removeFromArrangement(player.arrangement, id);
   const idx = player.hand.findIndex(c=>c.id===id);
-  if(idx>-1){ const [card] = player.hand.splice(idx,1); state.discardPile.push(card); }
+  if(idx===-1){
+    // the flagged card isn't actually in this player's hand (a stray/stale reference) —
+    // just clear the flag, don't touch anything else about their turn or hand.
+    state.discardWinAttempt = null;
+    state.errorMsg = null;
+    render();
+    return;
+  }
+  removeFromArrangement(player.arrangement, id);
+  const [card] = player.hand.splice(idx,1); state.discardPile.push(card);
   player.arrangement.groups = player.arrangement.groups.filter(g=>g.length>0);
   state.discardWinAttempt = null;
   state.phase='DRAW'; state.selectedCardId=null; state.errorMsg=null;
@@ -686,9 +764,15 @@ function advanceTurn(){
 function doDiscard(id){
   const player = currentPlayer();
   if(state.discardWinAttempt){
-    if(id===state.discardWinAttempt){ returnDiscardCard(); return; }
-    state.errorMsg = 'Finish with the card you picked up, or return it, before discarding anything else.';
-    render(); return;
+    const stillHeld = player.hand.some(c=>c.id===state.discardWinAttempt);
+    if(!stillHeld){
+      state.discardWinAttempt = null; // it left the hand some other way (e.g. dragged onto the table) — obligation resolved
+    } else if(id===state.discardWinAttempt){
+      returnDiscardCard(); return;
+    } else {
+      state.errorMsg = 'Finish with the card you picked up, or return it, before discarding anything else.';
+      render(); return;
+    }
   }
   removeFromArrangement(player.arrangement, id);
   const idx = player.hand.findIndex(c=>c.id===id);
@@ -749,6 +833,7 @@ function moveCardToTable(id, destIdx, beforeId, fromTable, sourceIdx, player){
     removeFromArrangement(player.arrangement, id);
     const handIdx = player.hand.findIndex(c=>c.id===id);
     if(handIdx>-1) player.hand.splice(handIdx,1);
+    if(state.discardWinAttempt===id) state.discardWinAttempt = null; // resolved by placing it on the table directly
   }
   state.errorMsg = null;
   render();
@@ -849,17 +934,20 @@ function layDownGroupsToTable(player, groups){
 }
 /* total points, and whether at least one pure trio + one pure suivie, among a set of valid groups
    (joker-containing groups don't count toward the opening total). */
+/* Every valid group placed counts toward the opening total, jokers included — a joker's value is
+   whatever card it stands in for (already how comboValue works). The two required anchors — one
+   trio, one suivie — must still be entirely joker-free, but extra jokered groups laid down at the
+   same time still add their points to the total. */
 function evaluateGroupsForOpening(validGroups, cardsById){
-  let total=0, hasTrio=false, hasSuivie=false;
+  let total=0, hasPureTrio=false, hasPureSuivie=false;
   validGroups.forEach(g=>{
     const cards = g.map(id=>cardsById[id]);
     const info = analyzeGroup(cards);
-    if(info.hasJoker) return;
     total += comboValue(cards, info.trio ? 'trio' : 'suivie');
-    if(info.trio) hasTrio = true;
-    if(info.suivie) hasSuivie = true;
+    if(info.trio && !info.hasJoker) hasPureTrio = true;
+    if(info.suivie && !info.hasJoker) hasPureSuivie = true;
   });
-  return { total, hasTrio, hasSuivie };
+  return { total, hasTrio: hasPureTrio, hasSuivie: hasPureSuivie };
 }
 /* Human "Lay Down" button — either opens (first time, needs 71+/threshold, joker-free trio+suivie)
    or, once opened, freely lays down any ready valid groups. */
@@ -1197,6 +1285,7 @@ function render(){
   if(state.online && state.screen==='GAME' && !state.suppressPush) pushGameState();
 }
 function paintUI(){
+  maybeAlertMyTurn();
   const app = document.getElementById('app');
   if(state.screen==='LANDING'){ app.innerHTML = renderLanding(); attachLandingHandlers(); return; }
   if(state.screen==='ONLINE_LOBBY'){ app.innerHTML = renderOnlineLobby(); attachOnlineLobbyHandlers(); return; }
@@ -1302,7 +1391,7 @@ function renderOnlineWaiting(){
   }).join('');
   const s = Object.assign({ allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet', openThreshold:71, scoringStyle:'value' }, room.settings||{});
   const settingsBlock = state.isHost ? `
-    <div class="field"><label>Points target (first to reach it loses)</label><input type="number" id="mpPointsTarget" min="50" step="50" value="${room.pointsTarget||500}"></div>
+    <div class="field"><label>Points target (first to reach it loses)</label><input type="number" id="mpPointsTarget" min="50" step="1" value="${room.pointsTarget||501}"></div>
     <div class="field">
       <label>Game mode</label>
       <select id="gameMode">
@@ -1312,7 +1401,7 @@ function renderOnlineWaiting(){
     </div>
     ${renderModeSettingsFields(s)}
     <div class="btnrow"><button class="ghost" onclick="updateRoomSettings()">Save settings</button></div>
-  ` : `<p class="status-line">Mode: ${s.mode==='71'?'71':'Complet'} · Points target: ${room.pointsTarget||500} — the host can adjust settings.</p>`;
+  ` : `<p class="status-line">Mode: ${s.mode==='71'?'71':'Complet'} · Points target: ${room.pointsTarget||501} — the host can adjust settings.</p>`;
 
   return `
   <div class="header"><div class="eyebrow">Waiting room</div></div>
@@ -1420,7 +1509,7 @@ function renderSetup(){
     </div>
     <div class="field">
       <label>Points target (first to reach it loses)</label>
-      <input type="number" id="pointsTarget" min="50" step="50" value="${state.pointsTarget || 500}">
+      <input type="number" id="pointsTarget" min="50" step="1" value="${state.pointsTarget || 501}">
     </div>
     <div class="field">
       <label>Game mode</label>
@@ -1444,7 +1533,7 @@ function renderSetup(){
         <li>Tap the stock (or the discard pile, when it's drawable) to draw. Drag cards to reorder your hand and build groups exactly where you want them — or select a card, then tap another card or a zone to move it there.</li>
         <li>To discard, drag a card onto the discard pile — or select a card and tap the discard pile.</li>
         <li><strong>Suivie</strong>: 3+ consecutive cards, same suit — Ace can sit low (A-2-3…) or high (…Q-K-A), but a run can never wrap around through K-A-2. <strong>Trio</strong>: 3 or 4 cards, same rank, all different suits. A combination can never contain more than one joker.</li>
-        <li><strong>Complet mode:</strong> your finished hand needs at least one suivie and one trio built with no joker at all — arrange all your other cards into valid groups and hit Finish. Once the tournante is gone, you can still pick up the top discard purely to try to finish immediately (it can sit anywhere in your groups, but you still need a joker-free trio and suivie built from the rest of your cards). Every other player takes 100 points when someone finishes (200 if the closing card was a joker); hitting Finish wrongly costs the finisher 50 points.</li>
+        <li><strong>Complet mode:</strong> your finished hand needs at least one suivie and one trio built with no joker at all — arrange all your other cards into valid groups and hit Finish. Once the tournante is gone, you can still pick up the top discard purely to try to finish immediately (it can sit anywhere in your groups, but you still need a joker-free trio and suivie built from the rest of your cards). Every other player takes 100 points when someone finishes (200 if the closing card was a joker); hitting Finish wrongly gives the finisher 51 points.</li>
         <li><strong>71 mode:</strong> build a trio and a suivie, both joker-free, worth more than the table's current threshold (your chosen minimum-to-open, 71 or 51, to start) — tap "Lay Down" to place them on the table and open. Once you're open, lay down any further valid groups whenever you like, and drag cards between your hand and any combination on the table (yours or another player's) — you can add to a combo or pull a card off it and put it elsewhere, as long as every combination on the table stays a valid trio/suivie afterward. Once the tournante is gone, you may still pick up the top discard if you already have (or have already proven, by opening) a joker-free trio and suivie — meant to be laid down or closed with that same turn, or returned if you can't. Each new player who wants to open must beat the point total the last opener used. Close by getting down to your last card and tapping Close: everyone else who opened is scored on the cards left in their hand — either card value (2–10 face value, J/Q/K/paired-aces = 10, a lone Ace = 1) or a flat 10 per card, whichever you chose — and anyone who never opened takes a flat 100, doubled for everyone if you closed with a joker.</li>
         <li><strong>Closing with a Complet in 71 mode:</strong> if your whole hand already forms a full valid finish in one shot — a joker-free trio, a joker-free suivie, everything else grouped, one card left to throw face down — you can hit "Close (Complet)" to end the round immediately, even if you never opened or laid a single card on the table. This is also the only way to close with a joker as your last card (which doubles everyone else's points) — the normal gradual Close never allows a joker as the final card.</li>
         <li>If you're down to your very last card, you can't pick up the discard pile to try to end your turn with it — you have to draw from the stock instead.</li>
@@ -1491,7 +1580,7 @@ function attachSetupHandlers(){
       const bc=document.getElementById('bot-'+i); bots.push(bc?bc.checked:false);
     }
     const ptEl = document.getElementById('pointsTarget');
-    state.pointsTarget = ptEl ? (parseInt(ptEl.value,10)||500) : state.pointsTarget;
+    state.pointsTarget = ptEl ? (parseInt(ptEl.value,10)||501) : state.pointsTarget;
     state.settings = readSettingsFromDom();
     state.numPlayers = n; state.names = names; state.bots = bots; render();
   };
@@ -1499,7 +1588,7 @@ function attachSetupHandlers(){
   document.getElementById('startBtn').onclick = ()=>{
     const n = state.numPlayers; const names=[]; const bots=[];
     for(let i=0;i<n;i++){ names.push(document.getElementById('name-'+i).value); bots.push(document.getElementById('bot-'+i).checked); }
-    const pointsTarget = parseInt(document.getElementById('pointsTarget').value,10) || 500;
+    const pointsTarget = parseInt(document.getElementById('pointsTarget').value,10) || 501;
     const settings = readSettingsFromDom();
     startGame(n, names, bots, pointsTarget, settings);
   };
@@ -1554,6 +1643,33 @@ function renderPassScreen(){
   </div>`;
 }
 function revealHand(){ state.phase = state.pendingAfterPass; state.errorMsg=null; render(); }
+
+/* Lays a flat hand out the way it would look grouped on the table — for end-of-round display only.
+   Reuses the same greedy grouping the bot uses to arrange its own hand. */
+function renderHandLaidOut(hand){
+  if(hand.length===0) return '<span style="opacity:.5;font-size:13px;">no cards left</span>';
+  let naturals = hand.filter(c=>!c.joker).slice();
+  let jokers = hand.filter(c=>c.joker).slice();
+  const sr = extractSuivies(naturals);
+  let groups = sr.groups.slice();
+  const tr = extractTrios(sr.remaining);
+  groups = groups.concat(tr.groups);
+  const jr = tryUseJokers(tr.remaining, jokers, groups);
+  const leftover = jr.remaining.concat(jr.jokers).sort((a,b)=>{
+    if(a.joker&&b.joker) return 0; if(a.joker) return 1; if(b.joker) return -1; return a.rank-b.rank;
+  });
+  const groupsHtml = groups.map(cards=>{
+    const info = analyzeGroup(cards);
+    const label = info.trio ? 'Trio' : info.suivie ? 'Suivie' : 'Group';
+    const tagClass = info.trio ? 'trio' : info.suivie ? 'suivie' : 'invalid';
+    return `<div class="zone" style="margin:6px 0;"><div class="zone-label"><span class="tag ${tagClass}">${label}</span></div>
+      <div class="zone-cards">${cards.map(c=>cardHTML(c,{})).join('')}</div></div>`;
+  }).join('');
+  const leftoverHtml = leftover.length
+    ? `<div class="zone" style="margin:6px 0;"><div class="zone-label"><span>Unmatched</span></div><div class="zone-cards">${leftover.map(c=>cardHTML(c,{})).join('')}</div></div>`
+    : '';
+  return groupsHtml + leftoverHtml;
+}
 
 function renderScoreboard(){
   const sorted = state.players.map((p,i)=>({p,idx:i})).sort((a,b)=>(a.p.score||0)-(b.p.score||0));
@@ -1614,10 +1730,8 @@ function renderResultScreen(){
       : `<h2>${state.resultMsg}</h2>`;
     const hands = state.players.map((p,i)=>{
       const delta = (state.lastRoundDeltas && state.lastRoundDeltas[i]) || 0;
-      const sorted = p.hand.slice().sort((a,b)=>{ if(a.joker&&b.joker)return 0; if(a.joker)return 1; if(b.joker)return -1; return a.rank-b.rank; });
-      const cards = sorted.map(c=>cardHTML(c,{})).join('');
       const note = i===state.winner ? 'closed — 0 pts' : (p.opened ? `+${delta} pts` : `never opened — +${delta} pts`);
-      return `<div class="result-hand"><h3>${p.name} <span style="color:var(--gold-bright); font-weight:400; font-size:12px;">(${note})</span></h3><div class="zone-cards">${cards || '<span style="opacity:.5;font-size:13px;">no cards left</span>'}</div></div>`;
+      return `<div class="result-hand"><h3>${p.name} <span style="color:var(--gold-bright); font-weight:400; font-size:12px;">(${note})</span></h3>${renderHandLaidOut(p.hand)}</div>`;
     }).join('');
     return `
     <div class="header"><div class="eyebrow">Round over</div></div>
@@ -1646,9 +1760,7 @@ function renderResultScreen(){
       }).join('');
       return `<div class="result-hand"><h3>${p.name} — winning hand</h3>${groupsHtml}</div>`;
     }
-    const sorted = p.hand.slice().sort((a,b)=>{ if(a.joker&&b.joker)return 0; if(a.joker)return 1; if(b.joker)return -1; return a.rank-b.rank; });
-    const cards = sorted.map(c=>cardHTML(c,{})).join('');
-    return `<div class="result-hand"><h3>${p.name}</h3><div class="zone-cards">${cards || '<span style="opacity:.5;font-size:13px;">no cards left</span>'}</div></div>`;
+    return `<div class="result-hand"><h3>${p.name}</h3>${renderHandLaidOut(p.hand)}</div>`;
   }).join('');
   return `
   <div class="header"><div class="eyebrow">Round over</div></div>
