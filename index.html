@@ -156,7 +156,7 @@ window.addEventListener('unhandledrejection', function(e){
   console.error('Unhandled promise rejection:', e.reason);
 });
 
-/* ============================= TURN ALERT (sound + vibration) ============================= */
+/* ============================= TURN ALERT (sound + notification) ============================= */
 /* A short synthesized chime — no audio file to host or load. Browsers require a user gesture
    before audio can play, so the AudioContext is created/resumed on the very first click anywhere
    in the app (almost always the first thing a player does), well before any alert is needed. */
@@ -165,29 +165,52 @@ function unlockAudio(){
   try{
     if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     else if(audioCtx.state==='suspended') audioCtx.resume().catch(()=>{});
-  }catch(e){ /* Web Audio unsupported — sound just won't play, vibration still can */ }
+  }catch(e){ /* Web Audio unsupported — sound just won't play */ }
 }
 document.addEventListener('click', unlockAudio, { once:true });
 
+/* OS-level Notifications are the best channel for a backgrounded tab; this needs the player to
+   opt in once (see the "Enable turn alerts" chip). */
+let notifPermissionRequested = false;
+function notificationsSupported(){ return typeof Notification!=='undefined'; }
+function notificationsEnabled(){ return notificationsSupported() && Notification.permission==='granted'; }
+function requestTurnNotifications(){
+  if(!notificationsSupported()) return;
+  notifPermissionRequested = true;
+  Notification.requestPermission().catch(()=>{}).then(()=>render());
+}
+
 function playTurnAlert(){
-  try{ if(navigator.vibrate) navigator.vibrate([120,60,120]); }catch(e){}
   try{
     unlockAudio();
-    if(!audioCtx) return;
-    const now = audioCtx.currentTime;
-    [{freq:880, start:0, dur:0.14}, {freq:1175, start:0.15, dur:0.22}].forEach(n=>{
-      const osc = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
-      osc.type = 'sine';
-      osc.frequency.value = n.freq;
-      gain.gain.setValueAtTime(0.0001, now+n.start);
-      gain.gain.exponentialRampToValueAtTime(0.28, now+n.start+0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now+n.start+n.dur);
-      osc.connect(gain); gain.connect(audioCtx.destination);
-      osc.start(now+n.start);
-      osc.stop(now+n.start+n.dur+0.02);
-    });
+    if(audioCtx){
+      const now = audioCtx.currentTime;
+      [{freq:880, start:0, dur:0.14}, {freq:1175, start:0.15, dur:0.22}].forEach(n=>{
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = n.freq;
+        gain.gain.setValueAtTime(0.0001, now+n.start);
+        gain.gain.exponentialRampToValueAtTime(0.28, now+n.start+0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now+n.start+n.dur);
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        osc.start(now+n.start);
+        osc.stop(now+n.start+n.dur+0.02);
+      });
+    }
   }catch(e){ console.error('Turn alert sound failed:', e); }
+  try{
+    if(notificationsEnabled() && document.hidden){
+      const n = new Notification('Rami — your turn!', {
+        body: 'Come back and play your move.',
+        tag: 'rami-turn',
+        renotify: true,
+        silent: false,
+      });
+      n.onclick = ()=>{ window.focus(); n.close(); };
+      setTimeout(()=>n.close(), 15000);
+    }
+  }catch(e){ console.error('Turn notification failed:', e); }
 }
 /* Fires once per genuine "it's now your turn" transition — not on every re-render while it's
    already your turn (dragging cards, etc. shouldn't keep re-triggering it). */
@@ -648,6 +671,13 @@ function blockedForMe(){
   if(state.online && state.currentIndex !== state.mySeatIndex) return true;
   return false;
 }
+/* Same as blockedForMe(), but without the isBot short-circuit — for actions bots also perform on
+   their own behalf (Finish, Lay Down, Close). A human should never trigger these mid-bot-turn
+   since the UI simply doesn't render the buttons then, so this only needs to guard against a
+   genuine other-player's-turn mismatch in an online room. */
+function blockedForHumanUI(){
+  return state.online && state.currentIndex !== state.mySeatIndex;
+}
 
 /* ============================= TURN ACTIONS ============================= */
 function drawFromStock(){
@@ -954,7 +984,7 @@ function evaluateGroupsForOpening(validGroups, cardsById){
 function tryOpenAndLayDown(){
   if(state.phase!=='ARRANGE' || state.settings.mode!=='71') return;
   const player = currentPlayer();
-  if(blockedForMe()) return;
+  if(blockedForHumanUI()) return;
   const arr = player.arrangement;
   const cardsById = {}; player.hand.forEach(c=>cardsById[c.id]=c);
   const validGroups = arr.groups.filter(g=>{ const info=analyzeGroup(g.map(id=>cardsById[id])); return info.trio||info.suivie; });
@@ -991,7 +1021,7 @@ function applyCloseScoring71(isJokerClose){
 function closeRound71(){
   if(state.phase!=='ARRANGE' || state.settings.mode!=='71') return;
   const player = currentPlayer();
-  if(blockedForMe()) return;
+  if(blockedForHumanUI()) return;
   const arr = player.arrangement;
   if(!player.opened){ if(!player.isBot){ state.errorMsg='You need to open (lay down more than the table\'s threshold) before you can close.'; render(); } return; }
   if(arr.groups.length>0){ if(!player.isBot){ state.errorMsg='Lay down or break up your remaining groups before closing.'; render(); } return; }
@@ -1022,7 +1052,7 @@ function closeRound71(){
 function tryCompletCloseIn71(){
   if(state.phase!=='ARRANGE' || state.settings.mode!=='71') return;
   const player = currentPlayer();
-  if(blockedForMe()) return;
+  if(blockedForHumanUI()) return;
   const arr = player.arrangement;
   const nonEmptyGroups = arr.groups.filter(g=>g.length>0);
   const cardsById = {}; player.hand.forEach(c=>cardsById[c.id]=c);
@@ -1050,7 +1080,7 @@ function tryCompletCloseIn71(){
 }
 
 function tryFinish(){
-  if(state.phase!=='ARRANGE' || blockedForMe()) return;
+  if(state.phase!=='ARRANGE' || blockedForHumanUI()) return;
   const player = currentPlayer();
   const arr = player.arrangement;
   const nonEmptyGroups = arr.groups.filter(g=>g.length>0);
@@ -1173,6 +1203,53 @@ function tryUseJokers(remaining, jokers, groups){
   }
   return { remaining, jokers };
 }
+/* Greedily extracting suivies-then-trios can miss combos that trios-then-suivies would have found
+   (and vice versa) — a card claimed early by one pass can be exactly what the other needed. Try
+   both orders and keep whichever groups more cards overall. */
+function computeGreedyGroups(hand){
+  const naturals = hand.filter(c=>!c.joker);
+  const jokers = hand.filter(c=>c.joker);
+  function tryOrder(suivieFirst){
+    let groups, remaining;
+    if(suivieFirst){
+      const sr = extractSuivies(naturals);
+      const tr = extractTrios(sr.remaining);
+      groups = sr.groups.concat(tr.groups);
+      remaining = tr.remaining;
+    } else {
+      const tr = extractTrios(naturals);
+      const sr = extractSuivies(tr.remaining);
+      groups = tr.groups.concat(sr.groups);
+      remaining = sr.remaining;
+    }
+    const jr = tryUseJokers(remaining, jokers.slice(), groups);
+    return { groups, poolCards: jr.remaining.concat(jr.jokers) };
+  }
+  const a = tryOrder(true), b = tryOrder(false);
+  const scoreOf = r => r.groups.reduce((s,g)=>s+g.length, 0);
+  return scoreOf(b) > scoreOf(a) ? b : a;
+}
+/* How connected a loose card is to the rest of the hand — same rank (trio potential) or nearby
+   same suit (suivie potential). Used to discard the card that's genuinely least useful to keep,
+   rather than just whichever happens to be highest value. */
+function cardUsefulness(card, hand){
+  let score = 0;
+  for(const other of hand){
+    if(other===card || other.joker) continue;
+    if(other.rank===card.rank) score += 2;
+    if(other.suit===card.suit && Math.abs(other.rank-card.rank)<=2) score += 1;
+  }
+  return score;
+}
+function pickBotDiscard(poolCards, hand){
+  const nonJokers = poolCards.filter(c=>!c.joker);
+  nonJokers.sort((a,b)=>{
+    const ua = cardUsefulness(a, hand), ub = cardUsefulness(b, hand);
+    if(ua!==ub) return ua-ub; // least useful first
+    return standaloneValue(b) - standaloneValue(a); // then shed the riskiest value first
+  });
+  return nonJokers[0] || poolCards[0];
+}
 function maybeRunBot(){
   if(state.phase==='DRAW'){ setTimeout(botDraw, 650); }
   else if(state.phase==='ARRANGE'){ setTimeout(botArrangeAndAct, 750); }
@@ -1191,14 +1268,7 @@ function botArrangeAndAct(){
   const player = currentPlayer();
   if(state.phase!=='ARRANGE' || !player.isBot) return;
   if(state.settings.mode==='71'){ botArrangeAndAct71(player); return; }
-  let naturals = player.hand.filter(c=>!c.joker).slice();
-  let jokers = player.hand.filter(c=>c.joker).slice();
-  const sr = extractSuivies(naturals);
-  let groups = sr.groups.slice();
-  const tr = extractTrios(sr.remaining);
-  groups = groups.concat(tr.groups);
-  const jr = tryUseJokers(tr.remaining, jokers, groups);
-  let poolCards = jr.remaining.concat(jr.jokers);
+  const { groups, poolCards } = computeGreedyGroups(player.hand);
   if(poolCards.length===0 && groups.length>0){
     const g = groups[groups.length-1];
     poolCards.push(g.pop());
@@ -1211,41 +1281,131 @@ function botArrangeAndAct(){
     const check = validateFinish(player.arrangement.groups, cardsById, state.settings.handSize);
     if(check.ok){ tryFinish(); return; }
   }
-  const toDiscard = poolCards.find(c=>!c.joker) || poolCards[0];
+  const toDiscard = pickBotDiscard(poolCards, player.hand);
   if(toDiscard){ doDiscard(toDiscard.id); } else { render(); }
 }
 function botArrangeAndAct71(player){
-  let naturals = player.hand.filter(c=>!c.joker).slice();
-  let jokers = player.hand.filter(c=>c.joker).slice();
-  const sr = extractSuivies(naturals);
-  let groups = sr.groups.slice();
-  const tr = extractTrios(sr.remaining);
-  groups = groups.concat(tr.groups);
-  const jr = tryUseJokers(tr.remaining, jokers, groups);
-  let poolCards = jr.remaining.concat(jr.jokers);
-  player.arrangement.groups = groups.map(g=>g.map(c=>c.id));
+  const gg = computeGreedyGroups(player.hand);
+  let groups = gg.groups.slice();
+  let poolCards = gg.poolCards.slice();
+  const cardsById = {}; player.hand.forEach(c=>cardsById[c.id]=c);
+  const valueOf = g => { const i = analyzeGroup(g); return comboValue(g, i.trio ? 'trio' : 'suivie'); };
+
+  let groupsToLay = [];
+  if(!player.opened){
+    // Open with the smallest set that works: one pure trio, one pure suivie, plus only as many
+    // extra groups (highest value first) as needed to clear the threshold — keeps everything else
+    // (including jokered groups) safely in hand instead of dumping the whole hand on the first go.
+    const pureTrio = groups.find(g=>{ const i=analyzeGroup(g); return i.trio && !i.hasJoker; });
+    const pureSuivie = groups.find(g=>{ const i=analyzeGroup(g); return i.suivie && !i.hasJoker; });
+    if(pureTrio && pureSuivie){
+      let candidate = [pureTrio, pureSuivie];
+      let total = valueOf(pureTrio) + valueOf(pureSuivie);
+      const others = groups.filter(g=>g!==pureTrio && g!==pureSuivie).sort((a,b)=>valueOf(b)-valueOf(a));
+      for(const g of others){
+        if(total >= state.requiredThreshold) break;
+        candidate.push(g); total += valueOf(g);
+      }
+      if(total >= state.requiredThreshold){
+        // Never open by using literally every groupable card with nothing left in reserve —
+        // that's exactly what strands a bot at 0 cards, unable to discard or ever advance.
+        const wouldStrand = candidate.length===groups.length && poolCards.length===0;
+        if(!wouldStrand) groupsToLay = candidate;
+      }
+    }
+  } else {
+    // Already opened: lay everything down UNLESS that would leave 0 loose cards (invalid) or fewer
+    // than 2 (no buffer, no flexibility, no live eligibility to snipe a good discard) — in which
+    // case hold back the smallest group(s). Exactly 1 loose card left is fine: that's a real close.
+    let held = [];
+    let leftover = poolCards.length;
+    if(leftover !== 1){
+      const bySize = groups.slice().sort((a,b)=>a.length-b.length);
+      while(leftover < 2 && bySize.length > 0){
+        const g = bySize.shift();
+        held.push(g);
+        leftover += g.length;
+      }
+    }
+    groupsToLay = groups.filter(g=>!held.includes(g));
+    poolCards = poolCards.concat(...held);
+  }
+
+  const groupsNotLaid = groups.filter(g=>!groupsToLay.includes(g));
+  poolCards = poolCards.concat(...groupsNotLaid);
+
+  player.arrangement.groups = groupsToLay.map(g=>g.map(c=>c.id));
   player.arrangement.pool = poolCards.map(c=>c.id);
 
-  const cardsById = {}; player.hand.forEach(c=>cardsById[c.id]=c);
-  let validGroups = player.arrangement.groups.filter(g=>{ const info=analyzeGroup(g.map(id=>cardsById[id])); return info.trio||info.suivie; });
-  if(validGroups.length>0){
+  if(groupsToLay.length>0){
+    const idGroups = player.arrangement.groups;
     if(!player.opened){
-      const { total, hasTrio, hasSuivie } = evaluateGroupsForOpening(validGroups, cardsById);
+      const { total, hasTrio, hasSuivie } = evaluateGroupsForOpening(idGroups, cardsById);
       if(hasTrio && hasSuivie && total>=state.requiredThreshold){
         player.opened = true;
         state.requiredThreshold = total;
-        layDownGroupsToTable(player, validGroups);
+        layDownGroupsToTable(player, idGroups);
       }
     } else {
-      layDownGroupsToTable(player, validGroups);
+      layDownGroupsToTable(player, idGroups);
     }
   }
 
   const arr = player.arrangement;
-  if(player.opened && arr.groups.length===0 && arr.pool.length===1){ closeRound71(); return; }
+
+  // Try to offload any remaining loose cards onto existing table combinations (yours or anyone
+  // else's) — this is the single most common way to shed cards turn over turn in real play, not
+  // just building brand-new independent groups. Only opened players may touch the table.
+  if(player.opened && state.table.length>0){
+    let progressed = true;
+    while(progressed && arr.pool.length > 1){
+      progressed = false;
+      const loosePool = arr.pool.map(id=>cardsById[id]).filter(c=>c && !c.joker);
+      for(const card of loosePool){
+        let placed = false;
+        for(let ti=0; ti<state.table.length; ti++){
+          const combo = state.table[ti];
+          const append = combo.concat([card.id]);
+          const appendCards = append.map(id => id===card.id ? card : state.allCardsById[id]);
+          const infoAppend = analyzeGroup(appendCards);
+          let chosen = (infoAppend.trio || infoAppend.suivie) ? append : null;
+          if(!chosen){
+            const prepend = [card.id].concat(combo);
+            const prependCards = prepend.map(id => id===card.id ? card : state.allCardsById[id]);
+            const infoPrepend = analyzeGroup(prependCards);
+            if(infoPrepend.trio || infoPrepend.suivie) chosen = prepend;
+          }
+          if(chosen){
+            removeFromArrangement(arr, card.id);
+            const hIdx = player.hand.findIndex(c=>c.id===card.id);
+            if(hIdx>-1) player.hand.splice(hIdx,1);
+            state.table[ti] = chosen;
+            placed = true; progressed = true;
+            break;
+          }
+        }
+        if(placed) break;
+      }
+    }
+  }
+
+  if(player.opened && arr.groups.length===0 && arr.pool.length===1){
+    const lastCard = cardsById[arr.pool[0]] || state.allCardsById[arr.pool[0]];
+    if(lastCard && !lastCard.joker){ closeRound71(); return; }
+    // a lone joker can't close this way (only the instant Complet close allows a joker finish) —
+    // just discard it like any other turn instead of getting stuck trying to close forever.
+  }
+
+  // Safety net: never end a turn with nothing loose to discard — pull one card back from a
+  // still-private group if needed, so the turn can always end (prevents the bot getting stuck).
+  if(arr.pool.length===0 && arr.groups.length>0){
+    const g = arr.groups[arr.groups.length-1];
+    arr.pool.push(g.pop());
+    if(g.length===0) arr.groups.pop();
+  }
 
   const poolNow = arr.pool.map(id=>cardsById[id] || state.allCardsById[id]).filter(Boolean);
-  const toDiscard = poolNow.find(c=>!c.joker) || poolNow[0];
+  const toDiscard = pickBotDiscard(poolNow, player.hand);
   if(toDiscard){ doDiscard(toDiscard.id); } else { render(); }
 }
 
@@ -1497,7 +1657,8 @@ function renderSetup(){
   }
   const modeSettingsHTML = renderModeSettingsFields(s);
   return `
-  <div class="header">
+  <div class="header" style="position:relative;">
+    <button class="ghost" onclick="state=newLandingState(); render();" style="position:absolute; left:0; top:0; padding:6px 12px; font-size:12px;">← Back</button>
     <div class="eyebrow">Rami · رامي</div>
     <h1>Rami</h1>
     <div class="sub">Two decks, 108 cards, one table.</div>
@@ -1594,6 +1755,32 @@ function attachSetupHandlers(){
   };
 }
 
+function renderNotifChip(){
+  if(!notificationsSupported()) return '';
+  const perm = Notification.permission;
+  if(perm==='granted'){
+    return `<div class="chip" style="opacity:.75;">🔔 Turn alerts on</div>`;
+  }
+  if(perm==='denied'){
+    return `<div class="chip" style="opacity:.6;">🔕 Notifications blocked in browser settings</div>`;
+  }
+  return `<button class="ghost" style="padding:6px 12px; font-size:12px; border-radius:20px;" onclick="requestTurnNotifications()">🔔 Enable turn alerts</button>`;
+}
+function confirmQuit(){
+  const msg = state.online
+    ? 'Leave this room and return to the menu? The room stays open for whoever\'s left.'
+    : 'Quit this game and return to the menu?';
+  if(confirm(msg)){
+    if(state.online){ leaveRoom(); } else { state = newLandingState(); render(); }
+  }
+}
+function renderGameHeader(titleHtml){
+  return `<div class="header" style="position:relative;">
+    <button class="ghost" onclick="confirmQuit()" style="position:absolute; left:0; top:0; padding:6px 12px; font-size:12px;">✕ Quit</button>
+    <div class="eyebrow">Rami</div>
+    ${titleHtml||''}
+  </div>`;
+}
 function renderPlayersBar(){
   const mode71 = state.settings && state.settings.mode==='71';
   return `<div class="playersbar">${state.players.map((p,i)=>{
@@ -1601,7 +1788,7 @@ function renderPlayersBar(){
     const isDealer = i===state.dealerIndex;
     const openedTag = mode71 ? (p.opened ? ' <span class="dealer-badge" style="color:var(--ok);border-color:var(--ok);">opened</span>' : '') : '';
     return `<div class="chip ${active?'active':''}">${p.isBot?'🤖 ':''}${p.name} · ${p.hand.length}🂠 · ${p.score||0}pts${isDealer?` <span class="dealer-badge">(dealer)</span>`:''}${openedTag}</div>`;
-  }).join('')}</div>`;
+  }).join('')}${renderNotifChip()}</div>`;
 }
 
 function renderTableBoard(interactive){
@@ -1633,7 +1820,7 @@ function renderPassScreen(){
     ? 'You are the dealer — you have 15 cards and open the round.'
     : 'It\'s your turn.';
   return `
-  <div class="header"><div class="eyebrow">Rami</div></div>
+  ${renderGameHeader('')}
   ${renderPlayersBar()}
   ${renderTableBoard(false)}
   <div class="panel pass-screen lattice">
@@ -1873,7 +2060,7 @@ function renderTable(){
   }
 
   return `
-  <div class="header"><div class="eyebrow">Rami</div><h1 style="font-size:22px;">${player.name}'s hand</h1></div>
+  ${renderGameHeader(`<h1 style="font-size:22px;">${player.name}'s hand</h1>`)}
   ${renderPlayersBar()}
   ${renderTableBoard(canCommit && mode71 && player.opened)}
   <div class="panel">
