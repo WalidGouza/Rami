@@ -298,8 +298,8 @@ function makeRoomCode(){
    per-player-hidden version instead. */
 const SYNC_KEYS = ['players','dealerIndex','currentIndex','hasBot','pointsTarget','gameOver',
   'settings','stock','discardPile','tournantePending','nextAfterDealer','table','requiredThreshold',
-  'allCardsById','phase','pendingAfterPass','discardWinAttempt','winner','resultMsg','finishWasJoker',
-  'roundPoints','lastRoundDeltas'];
+  'allCardsById','phase','pendingAfterPass','discardWinAttempt','pendingJokerPlacement','winner',
+  'resultMsg','finishWasJoker','roundPoints','lastRoundDeltas'];
 /* Firebase Realtime Database deletes any key whose value is null, undefined, an empty array, or an
    empty object when you write it. Our payload legitimately hits every one of those cases (an empty
    discard pile at the start of a round, discardWinAttempt going back to null, etc.) — so the field
@@ -311,8 +311,8 @@ const SYNC_DEFAULTS = {
   players: [], dealerIndex: 0, currentIndex: 0, hasBot: false, pointsTarget: 501, gameOver: false,
   settings: {}, stock: [], discardPile: [], tournantePending: false, nextAfterDealer: 0, table: [],
   requiredThreshold: 71, allCardsById: {}, phase: 'ARRANGE', pendingAfterPass: 'ARRANGE',
-  discardWinAttempt: null, winner: null, resultMsg: null, finishWasJoker: false, roundPoints: null,
-  lastRoundDeltas: [],
+  discardWinAttempt: null, pendingJokerPlacement: null, winner: null, resultMsg: null,
+  finishWasJoker: false, roundPoints: null, lastRoundDeltas: [],
 };
 
 function pushGameState(){
@@ -579,9 +579,8 @@ function comboValue(cards, type){
 /* value of a single leftover card, not part of any laid-down combination */
 function standaloneValue(card){
   if(card.joker) return 20; // house-rule default penalty for an unplayed joker
-  if(card.rank===1) return 1;
   if(card.rank>=2 && card.rank<=10) return card.rank;
-  return 10; // J, Q, K
+  return 10; // Ace, J, Q, K all count as 10 in the final hand countdown
 }
 
 
@@ -601,7 +600,7 @@ function startGame(numPlayers, names, bots, pointsTarget, settings){
     settings: Object.assign({ allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet', openThreshold:71, scoringStyle:'value' }, settings||{}),
     stock:[], discardPile:[], tournantePending:true, nextAfterDealer: 1 % numPlayers,
     table:[], requiredThreshold:71, allCardsById:{},
-    phase:'PASS', pendingAfterPass:'ARRANGE', discardWinAttempt:null,
+    phase:'PASS', pendingAfterPass:'ARRANGE', discardWinAttempt:null, pendingJokerPlacement:null,
     selectedCardId:null, errorMsg:null, winner:null, resultMsg:null,
   };
   dealGame();
@@ -630,6 +629,7 @@ function dealGame(){
   state.pendingAfterPass = 'ARRANGE';
   state.tournantePending = true;
   state.discardWinAttempt = null;
+  state.pendingJokerPlacement = null;
   state.nextAfterDealer = (state.dealerIndex+1) % n;
   state.selectedCardId = null;
   state.errorMsg = null;
@@ -786,7 +786,7 @@ function returnDiscardCard(){
 
 function advanceTurn(){
   state.currentIndex = (state.currentIndex+1)%state.players.length;
-  state.selectedCardId=null; state.errorMsg=null; state.discardWinAttempt=null;
+  state.selectedCardId=null; state.errorMsg=null; state.discardWinAttempt=null; state.pendingJokerPlacement=null;
   state.phase='PASS'; state.pendingAfterPass='DRAW';
   render();
 }
@@ -804,12 +804,45 @@ function doDiscard(id){
       render(); return;
     }
   }
+  // Swapped a real card in for a joker on the table this turn? That joker can't just sit loose in
+  // hand — it has to go into a group or back onto the table before the turn can end.
+  if(state.pendingJokerPlacement){
+    if(player.arrangement.pool.includes(state.pendingJokerPlacement)){
+      if(!player.isBot){ state.errorMsg = 'You freed a joker from the table — place it in a group or back on the table before ending your turn.'; render(); }
+      return;
+    }
+    state.pendingJokerPlacement = null; // it's been placed somewhere — obligation resolved
+  }
+  // 71 mode: once you're down to your very last card with nothing else to lay down, you must
+  // actually Close with it — throwing it away as a normal discard would strand you at 0 cards
+  // and never end the round. A lone joker is the one exception, since it can't gradually-close by
+  // design; that genuinely has nowhere to go but the discard pile.
+  if(state.settings.mode==='71' && player.opened && player.arrangement.groups.length===0 && player.hand.length===1){
+    const card = player.hand.find(c=>c.id===id);
+    if(card && !card.joker){
+      if(!player.isBot){ state.errorMsg = "That's your last card, and it can close the round — tap Close instead of discarding it."; render(); }
+      return;
+    }
+  }
   removeFromArrangement(player.arrangement, id);
   const idx = player.hand.findIndex(c=>c.id===id);
   if(idx===-1) return;
   const [card] = player.hand.splice(idx,1);
   state.discardPile.push(card);
   player.arrangement.groups = player.arrangement.groups.filter(g=>g.length>0);
+  // Table validity is enforced as each card moves, but this is a final check right as the turn
+  // ends: anything that's somehow still invalid dissolves into the finishing player's hand.
+  for(let i=state.table.length-1; i>=0; i--){
+    const combo = state.table[i];
+    const info = analyzeGroup(combo.map(cid=>state.allCardsById[cid]));
+    if(combo.length<3 || !(info.trio||info.suivie)){
+      state.table.splice(i,1);
+      combo.forEach(cid=>{
+        const c = state.allCardsById[cid];
+        if(c && !player.hand.some(h=>h.id===cid)){ player.hand.push(c); player.arrangement.pool.push(cid); }
+      });
+    }
+  }
   advanceTurn();
 }
 
@@ -819,23 +852,44 @@ function findTableComboIndex(id){
 }
 /* Would removing `id` from table combo `comboIdx` leave the table valid? Emptying a combo entirely
    is fine (it just disappears); shrinking below 3 cards, or breaking the run/set, is not. */
-function canRemoveFromTable(comboIdx, id){
+/* Taking a card off a table combo is never blocked. If what's left behind is no longer a valid
+   trio/suivie (too few cards, or broken by the gap), the whole remainder dissolves straight into
+   the acting player's hand instead of sitting on the table in a broken state. Returns true if the
+   combo was spliced out of state.table entirely (so callers can adjust any index they're holding). */
+function removeCardFromTableCombo(comboIdx, id, player){
   const combo = state.table[comboIdx];
-  if(!combo) return {ok:false};
+  if(!combo) return false;
   const candidate = combo.filter(x=>x!==id);
-  if(candidate.length===0) return {ok:true, becomesEmpty:true};
-  if(candidate.length<3) return {ok:false};
-  const info = analyzeGroup(candidate.map(cid=>state.allCardsById[cid]));
-  if(!(info.trio||info.suivie)) return {ok:false};
-  return {ok:true, becomesEmpty:false};
+  if(candidate.length>0){
+    const info = analyzeGroup(candidate.map(cid=>state.allCardsById[cid]));
+    if(candidate.length>=3 && (info.trio||info.suivie)){
+      state.table[comboIdx] = candidate;
+      return false;
+    }
+  }
+  state.table.splice(comboIdx,1);
+  candidate.forEach(cid=>{
+    const card = state.allCardsById[cid];
+    if(card && !player.hand.some(c=>c.id===cid)){ player.hand.push(card); player.arrangement.pool.push(cid); }
+  });
+  return true;
 }
 /* Move a card onto a table combo, whether it came from the player's own hand or from a different
-   (or the same) table combo. Rejects the move if either the destination or the depleted source
-   combo would end up invalid. */
+   (or the same) table combo. The destination must stay a valid trio/suivie — but pulling a card
+   out of its old combo is always allowed; any invalid remainder there just spills into hand.
+   Dropping directly onto a joker already in the combo is treated as a swap: the joker is replaced
+   in place (the combo doesn't grow) and freed into the player's hand — see trySwapJokerOnTable. */
 function moveCardToTable(id, destIdx, beforeId, fromTable, sourceIdx, player){
   const destOriginal = state.table[destIdx];
   if(!destOriginal) return;
   const sameCombo = fromTable && sourceIdx===destIdx;
+
+  const beforeCard = beforeId ? state.allCardsById[beforeId] : null;
+  if(beforeCard && beforeCard.joker && destOriginal.includes(beforeId) && !sameCombo){
+    trySwapJokerOnTable(id, destIdx, beforeId, fromTable, sourceIdx, player);
+    return;
+  }
+
   let newDest = destOriginal.filter(x=>x!==id);
   if(beforeId){
     const bi = newDest.indexOf(beforeId);
@@ -847,24 +901,52 @@ function moveCardToTable(id, destIdx, beforeId, fromTable, sourceIdx, player){
     const destInfo = analyzeGroup(newDest.map(cid=>state.allCardsById[cid]));
     if(!(destInfo.trio||destInfo.suivie)){ state.errorMsg="That would break the combination — try a different spot."; render(); return; }
   }
-  if(fromTable && !sameCombo){
-    const check = canRemoveFromTable(sourceIdx, id);
-    if(!check.ok){ state.errorMsg='Removing that card would leave an invalid combination on the table — try somewhere else instead.'; render(); return; }
-  }
   if(!fromTable && !player.hand.some(c=>c.id===id)) return;
 
-  state.table[destIdx] = newDest;
+  let adjustedDestIdx = destIdx;
   if(fromTable && !sameCombo){
-    const srcCombo = state.table[sourceIdx];
-    const cidx = srcCombo.indexOf(id);
-    if(cidx>-1) srcCombo.splice(cidx,1);
-    if(srcCombo.length===0) state.table.splice(sourceIdx,1);
+    const spliced = removeCardFromTableCombo(sourceIdx, id, player);
+    if(spliced && sourceIdx < adjustedDestIdx) adjustedDestIdx -= 1;
   } else if(!fromTable){
     removeFromArrangement(player.arrangement, id);
     const handIdx = player.hand.findIndex(c=>c.id===id);
     if(handIdx>-1) player.hand.splice(handIdx,1);
     if(state.discardWinAttempt===id) state.discardWinAttempt = null; // resolved by placing it on the table directly
   }
+  state.table[adjustedDestIdx] = newDest;
+  state.errorMsg = null;
+  render();
+}
+/* Swap a real card in for a joker already sitting in a table combo: the combo stays the same size
+   (no extension), the joker comes out and goes to the acting player's hand — but per house rule,
+   that joker can't just sit there; it's tracked in state.pendingJokerPlacement until the player
+   tucks it into another group or back onto the table, and ending the turn is blocked until then. */
+function trySwapJokerOnTable(id, destIdx, jokerId, fromTable, sourceIdx, player){
+  const combo = state.table[destIdx];
+  if(!combo || !combo.includes(jokerId) || id===jokerId) return;
+  const candidate = combo.map(cid => cid===jokerId ? id : cid);
+  const candCards = candidate.map(cid => cid===id ? state.allCardsById[id] : state.allCardsById[cid]);
+  const info = analyzeGroup(candCards);
+  if(!(info.trio || info.suivie)){ state.errorMsg = "That card can't take the joker's place there — try a different spot."; render(); return; }
+  if(!fromTable && !player.hand.some(c=>c.id===id)) return;
+
+  let adjustedDestIdx = destIdx;
+  if(fromTable){
+    const spliced = removeCardFromTableCombo(sourceIdx, id, player);
+    if(spliced && sourceIdx < adjustedDestIdx) adjustedDestIdx -= 1;
+  } else {
+    removeFromArrangement(player.arrangement, id);
+    const handIdx = player.hand.findIndex(c=>c.id===id);
+    if(handIdx>-1) player.hand.splice(handIdx,1);
+    if(state.discardWinAttempt===id) state.discardWinAttempt = null;
+  }
+  state.table[adjustedDestIdx] = candidate;
+
+  const jokerCard = state.allCardsById[jokerId];
+  if(jokerCard && !player.hand.some(c=>c.id===jokerId)) player.hand.push(jokerCard);
+  if(!player.arrangement.pool.includes(jokerId)) player.arrangement.pool.push(jokerId);
+  state.pendingJokerPlacement = jokerId;
+
   state.errorMsg = null;
   render();
 }
@@ -887,13 +969,9 @@ function performMove(id, zoneType, idx, beforeId){
     if(state.settings.mode!=='71') return; // the table only exists in 71 mode
     if(!player.opened){ state.errorMsg = 'Lay down your own combination to open before you can touch the table.'; render(); return; }
     if(zoneType==='table'){ moveCardToTable(id, idx, beforeId, fromTable, sourceTableIdx, player); return; }
-    // picking a card up off the table, into your own hand
-    const check = canRemoveFromTable(sourceTableIdx, id);
-    if(!check.ok){ state.errorMsg = 'Removing that card would leave an invalid combination on the table — try somewhere else instead.'; render(); return; }
-    const srcCombo = state.table[sourceTableIdx];
-    const cidx = srcCombo.indexOf(id);
-    srcCombo.splice(cidx,1);
-    if(srcCombo.length===0) state.table.splice(sourceTableIdx,1);
+    // picking a card up off the table, into your own hand — never blocked; if it breaks the
+    // combo, whatever remains also spills into your hand instead of staying stranded there.
+    removeCardFromTableCombo(sourceTableIdx, id, player);
     const card = state.allCardsById[id];
     if(card && !player.hand.some(c=>c.id===id)) player.hand.push(card);
   } else {
@@ -962,21 +1040,26 @@ function layDownGroupsToTable(player, groups){
   player.arrangement.groups = player.arrangement.groups.filter(g=>!groups.includes(g));
   player.hand = player.hand.filter(c=>!movedIds.has(c.id));
 }
-/* total points, and whether at least one pure trio + one pure suivie, among a set of valid groups
-   (joker-containing groups don't count toward the opening total). */
-/* Every valid group placed counts toward the opening total, jokers included — a joker's value is
-   whatever card it stands in for (already how comboValue works). The two required anchors — one
-   trio, one suivie — must still be entirely joker-free, but extra jokered groups laid down at the
-   same time still add their points to the total. */
+/* The 71+ (or 51+) opening threshold must be cleared using joker-free value alone — a group that
+   includes a joker never counts toward getting you over that bar. But once your joker-free groups
+   already clear the current threshold on their own, any jokered groups you're laying down in the
+   same move DO add their value on top of the final total (which becomes the new threshold for the
+   next player to beat). Below the bar, jokers simply don't count at all. */
 function evaluateGroupsForOpening(validGroups, cardsById){
-  let total=0, hasPureTrio=false, hasPureSuivie=false;
+  let pureTotal=0, jokerTotal=0, hasPureTrio=false, hasPureSuivie=false;
   validGroups.forEach(g=>{
     const cards = g.map(id=>cardsById[id]);
     const info = analyzeGroup(cards);
-    total += comboValue(cards, info.trio ? 'trio' : 'suivie');
-    if(info.trio && !info.hasJoker) hasPureTrio = true;
-    if(info.suivie && !info.hasJoker) hasPureSuivie = true;
+    const value = comboValue(cards, info.trio ? 'trio' : 'suivie');
+    if(info.hasJoker){
+      jokerTotal += value;
+    } else {
+      pureTotal += value;
+      if(info.trio) hasPureTrio = true;
+      if(info.suivie) hasPureSuivie = true;
+    }
   });
+  const total = pureTotal >= state.requiredThreshold ? pureTotal + jokerTotal : pureTotal;
   return { total, hasTrio: hasPureTrio, hasSuivie: hasPureSuivie };
 }
 /* Human "Lay Down" button — either opens (first time, needs 71+/threshold, joker-free trio+suivie)
@@ -992,7 +1075,7 @@ function tryOpenAndLayDown(){
   if(!player.opened){
     const { total, hasTrio, hasSuivie } = evaluateGroupsForOpening(validGroups, cardsById);
     if(!hasTrio || !hasSuivie){ state.errorMsg = 'To open, lay down at least one trio and one suivie, both without any joker.'; render(); return; }
-    if(total < state.requiredThreshold){ state.errorMsg = `You need more than ${state.requiredThreshold-1} joker-free points to open — this totals ${total}.`; render(); return; }
+    if(total < state.requiredThreshold){ state.errorMsg = `You need ${state.requiredThreshold} or more joker-free points to open — this totals ${total}.`; render(); return; }
     player.opened = true;
     state.requiredThreshold = total;
   }
@@ -1695,8 +1778,10 @@ function renderSetup(){
         <li>To discard, drag a card onto the discard pile — or select a card and tap the discard pile.</li>
         <li><strong>Suivie</strong>: 3+ consecutive cards, same suit — Ace can sit low (A-2-3…) or high (…Q-K-A), but a run can never wrap around through K-A-2. <strong>Trio</strong>: 3 or 4 cards, same rank, all different suits. A combination can never contain more than one joker.</li>
         <li><strong>Complet mode:</strong> your finished hand needs at least one suivie and one trio built with no joker at all — arrange all your other cards into valid groups and hit Finish. Once the tournante is gone, you can still pick up the top discard purely to try to finish immediately (it can sit anywhere in your groups, but you still need a joker-free trio and suivie built from the rest of your cards). Every other player takes 100 points when someone finishes (200 if the closing card was a joker); hitting Finish wrongly gives the finisher 51 points.</li>
-        <li><strong>71 mode:</strong> build a trio and a suivie, both joker-free, worth more than the table's current threshold (your chosen minimum-to-open, 71 or 51, to start) — tap "Lay Down" to place them on the table and open. Once you're open, lay down any further valid groups whenever you like, and drag cards between your hand and any combination on the table (yours or another player's) — you can add to a combo or pull a card off it and put it elsewhere, as long as every combination on the table stays a valid trio/suivie afterward. Once the tournante is gone, you may still pick up the top discard if you already have (or have already proven, by opening) a joker-free trio and suivie — meant to be laid down or closed with that same turn, or returned if you can't. Each new player who wants to open must beat the point total the last opener used. Close by getting down to your last card and tapping Close: everyone else who opened is scored on the cards left in their hand — either card value (2–10 face value, J/Q/K/paired-aces = 10, a lone Ace = 1) or a flat 10 per card, whichever you chose — and anyone who never opened takes a flat 100, doubled for everyone if you closed with a joker.</li>
+        <li><strong>71 mode:</strong> build a trio and a suivie, both joker-free, worth more than the table's current threshold (your chosen minimum-to-open, 71 or 51, to start) — only joker-free groups count toward that total, though a jokered group can still be laid down alongside them once you qualify. Tap "Lay Down" to place them on the table and open. Once you're open, lay down any further valid groups whenever you like, and drag cards between your hand and any combination on the table (yours or another player's) — you can add to a combo or pull a card off it and put it elsewhere, as long as every combination on the table stays a valid trio/suivie afterward. Once the tournante is gone, you may still pick up the top discard if you already have (or have already proven, by opening) a joker-free trio and suivie — meant to be laid down or closed with that same turn, or returned if you can't. Each new player who wants to open must beat the joker-free point total the last opener used. Close by getting down to your last card and tapping Close: everyone else who opened is scored on the cards left in their hand — either card value (2–10 face value, Ace/J/Q/K = 10) or a flat 10 per card, whichever you chose — and anyone who never opened takes a flat 100, doubled for everyone if you closed with a joker.</li>
+        <li><strong>Swapping out a joker:</strong> drop a real card directly onto a joker sitting in a table combination, and if that card legitimately takes the joker's place, the joker comes out into your hand instead of the combo just growing. That freed joker can't sit there, though — you have to tuck it into a group or back onto the table before you can end your turn.</li>
         <li><strong>Closing with a Complet in 71 mode:</strong> if your whole hand already forms a full valid finish in one shot — a joker-free trio, a joker-free suivie, everything else grouped, one card left to throw face down — you can hit "Close (Complet)" to end the round immediately, even if you never opened or laid a single card on the table. This is also the only way to close with a joker as your last card (which doubles everyone else's points) — the normal gradual Close never allows a joker as the final card.</li>
+        <li>Once you're down to one last card that's able to close the round, you can't just discard it away instead — you have to tap Close. The one exception is a lone joker: since the gradual Close can't finish with a joker, discarding it is the only option there, and that's still allowed.</li>
         <li>If you're down to your very last card, you can't pick up the discard pile to try to end your turn with it — you have to draw from the stock instead.</li>
         <li><strong>Scoring:</strong> whoever first reaches the points target loses the game.</li>
       </ul>
@@ -1809,7 +1894,7 @@ function renderTableBoard(interactive){
     </div>`;
   }).join('');
   return `<div class="panel">
-    <div class="zone-label" style="margin-bottom:6px;"><span>The table</span><span>Opens at more than ${state.requiredThreshold-1} pts</span></div>
+    <div class="zone-label" style="margin-bottom:6px;"><span>The table</span><span>Opens at ${state.requiredThreshold} or more pts</span></div>
     ${state.table.length ? combosHTML : '<div class="status-line">Nothing on the table yet.</div>'}
   </div>`;
 }
@@ -1997,7 +2082,7 @@ function renderTable(){
 
   const poolCards = arr.pool.map(id=>cardsById[id]).filter(Boolean);
   const poolHTML = poolCards.map(c=>cardHTML(c,{
-    selected: state.selectedCardId===c.id, pickup: c.id===state.discardWinAttempt,
+    selected: state.selectedCardId===c.id, pickup: c.id===state.discardWinAttempt || c.id===state.pendingJokerPlacement,
     clickable: canOrganize, draggable: canOrganize, dropTarget: canOrganize, onCardClick: canOrganize, zoneType:'pool'
   })).join('');
 
@@ -2008,7 +2093,7 @@ function renderTable(){
     const tagClass = info.trio ? 'trio' : info.suivie ? 'suivie' : 'invalid';
     const tagText = info.trio ? ('Trio'+(info.hasJoker?' · joker':'')) : info.suivie ? ('Suivie'+(info.hasJoker?' · joker':'')) : 'Not valid yet';
     const cardsHTML = cards.map(c=>cardHTML(c,{
-      selected: state.selectedCardId===c.id, pickup: c.id===state.discardWinAttempt,
+      selected: state.selectedCardId===c.id, pickup: c.id===state.discardWinAttempt || c.id===state.pendingJokerPlacement,
       clickable: canOrganize, draggable: canOrganize, dropTarget: canOrganize, onCardClick: canOrganize, zoneType:'group', zoneIdx:i
     })).join('');
     const disbandBtn = canOrganize ? `<button class="disband" onclick="event.stopPropagation(); disbandGroup(${i})">Ungroup</button>` : '';
@@ -2033,9 +2118,11 @@ function renderTable(){
   else if(state.discardWinAttempt) statusLine = mode71
     ? 'You picked up the discard to lay down or close with. Do so now, or return it.'
     : 'You picked up the discard to try to win. Finish now, or return it.';
+  else if(state.pendingJokerPlacement && player.arrangement.pool.includes(state.pendingJokerPlacement))
+    statusLine = 'You freed a joker from the table by swapping a real card in — place it in a group or back on the table before ending your turn.';
   else if(mode71) statusLine = player.opened
     ? 'You\'re in — lay down more groups, drag cards onto any combination on the table, or close once you\'re down to your last card.'
-    : `Build a trio and a suivie, both without a joker, worth more than ${state.requiredThreshold-1} points, then tap Lay Down to open — or close instantly with "Close (Complet)" if your whole hand already forms a full finish.`;
+    : `Build a trio and a suivie, both without a joker, worth ${state.requiredThreshold} or more points, then tap Lay Down to open — or close instantly with "Close (Complet)" if your whole hand already forms a full finish.`;
   else statusLine = 'Drag cards to arrange them exactly where you want — or tap a card, then tap another card or a zone.';
 
   const newGroupZone = canOrganize ? `<div class="zone new-group" ondragover="allowDrop(event)" ondrop="onDropZone(event,'newgroup')" onclick="zoneClick('newgroup')">+ drag or tap a card here to start a new group</div>` : '';
