@@ -627,7 +627,7 @@ function startGame(numPlayers, names, bots, pointsTarget, settings){
   state = {
     screen:'GAME', players, dealerIndex:0, currentIndex:0, hasBot: players.some(p=>p.isBot), viewIndex, online:false,
     pointsTarget: (Number.isFinite(pointsTarget) && pointsTarget>0) ? pointsTarget : 501, gameOver:false,
-    settings: Object.assign({ allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet', openThreshold:71, scoringStyle:'value' }, settings||{}),
+    settings: Object.assign({ allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet', openThreshold:71, scoringStyle:'flat10' }, settings||{}),
     stock:[], discardPile:[], tournantePending:true, nextAfterDealer: 1 % numPlayers,
     table:[], requiredThreshold:71, allCardsById:{}, eliminatedPlayers:[],
     phase:'PASS', pendingAfterPass:'ARRANGE', discardWinAttempt:null, pendingJokerPlacement:null,
