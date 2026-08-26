@@ -616,7 +616,7 @@ function standaloneValue(card){
 
 /* ============================= STATE ============================= */
 let state = {};
-function newSetupState(){ return { screen:'SETUP', numPlayers:4, names:['Player 1','Player 2','Player 3','Player 4'], bots:[false,false,false,false], pointsTarget:501, settings:{ allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet', openThreshold:71, scoringStyle:'value' } }; }
+function newSetupState(){ return { screen:'SETUP', numPlayers:4, names:['Player 1','Player 2','Player 3','Player 4'], bots:[false,false,false,false], pointsTarget:501, settings:{ allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet', openThreshold:71, scoringStyle:'flat10' } }; }
 function newLandingState(){ return { screen:'LANDING' }; }
 state = newLandingState();
 
