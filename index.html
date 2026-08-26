@@ -490,7 +490,7 @@ function startOnlineGame(){
   state.hasBot = players.some(p=>p.isBot);
   state.pointsTarget = room.pointsTarget || 501;
   state.gameOver = false;
-  state.settings = Object.assign({ allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet', openThreshold:71, scoringStyle:'value' }, room.settings||{});
+  state.settings = Object.assign({ allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet', openThreshold:71, scoringStyle:'flat10' }, room.settings||{});
   state.online = true;
   state.screen = 'GAME';
   const myIdx = players.findIndex(p=>p.uid===myUid);
