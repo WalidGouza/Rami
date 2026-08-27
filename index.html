@@ -113,14 +113,14 @@
   .card.pickup{ box-shadow:0 0 0 2px var(--danger), 0 3px 8px rgba(0,0,0,0.35); }
 
   /* ---- scrollable table area, clears the fixed hand dock below ---- */
-  .scroll-content{ padding-bottom:220px; }
+  .scroll-content{ padding-bottom:200px; }
 
   /* ---- fixed hand dock: hand + its buttons always visible, never covering the table ---- */
   .hand-dock{
-    position:fixed; left:0; right:0; bottom:0; max-width:1000px; margin:0 auto; z-index:60;
+    position:fixed; left:0; right:0; bottom:8px; max-width:1000px; margin:0 auto; z-index:60;
     background:linear-gradient(180deg, rgba(7,54,50,0) 0%, var(--felt-dark) 22%, var(--felt-dark) 100%);
     border-top:1px solid rgba(201,162,75,0.35); box-shadow:0 -10px 24px rgba(0,0,0,0.45);
-    padding:8px 16px calc(52px + env(safe-area-inset-bottom, 0px));
+    padding:8px 16px calc(40px + env(safe-area-inset-bottom, 0px));
   }
 
   /* ---- fanned hand, foreground ---- */
@@ -309,7 +309,7 @@ function initFirebase(onReady, attempt){
     fbDb = firebase.database();
   } catch(err){
     console.error('Firebase init failed:', err);
-    firebaseError = 'Firebase failed to initialize: ' + err.message;
+    firebaseError = 'Could not start online play: ' + err.message;
     paintUI(); return;
   }
   firebase.auth().onAuthStateChanged(user=>{
@@ -317,7 +317,7 @@ function initFirebase(onReady, attempt){
   });
   firebase.auth().signInAnonymously().catch(err=>{
     console.error('Firebase anonymous sign-in failed:', err);
-    firebaseError = 'Could not sign in: ' + err.message + (err.code==='auth/configuration-not-found' ? ' — make sure Anonymous sign-in is enabled in Firebase Authentication settings.' : '');
+    firebaseError = 'Could not sign in: ' + err.message;
     paintUI();
   });
 }
@@ -403,7 +403,7 @@ function onRemoteGameUpdate(remoteGame){
 }
 
 function createRoom(name){
-  if(!fbDb || !myUid){ alert(firebaseError || 'Still connecting to Firebase — wait a second and try again.'); return; }
+  if(!fbDb || !myUid){ alert(firebaseError || 'Still connecting — wait a second and try again.'); return; }
   const code = makeRoomCode();
   const seat = { uid: myUid, name: (name||'Player').trim() || 'Player', isBot:false };
   fbDb.ref('rooms/'+code).set({
@@ -412,7 +412,7 @@ function createRoom(name){
     createdAt: firebase.database.ServerValue.TIMESTAMP,
     seats: [seat],
     pointsTarget: 501,
-    settings: { allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet', openThreshold:71, scoringStyle:'value' },
+    settings: { allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet', openThreshold:71, scoringStyle:'flat10' },
   }).then(()=>{
     localStorage.setItem('rami_room', code);
     localStorage.setItem('rami_name', seat.name);
@@ -420,7 +420,7 @@ function createRoom(name){
   }).catch(err=>{ alert('Could not create room: '+err.message); });
 }
 function joinRoom(code, name){
-  if(!fbDb || !myUid){ alert(firebaseError || 'Still connecting to Firebase — wait a second and try again.'); return; }
+  if(!fbDb || !myUid){ alert(firebaseError || 'Still connecting — wait a second and try again.'); return; }
   code = (code||'').trim().toUpperCase();
   if(!code) return;
   const ref = fbDb.ref('rooms/'+code);
@@ -501,7 +501,7 @@ function startOnlineGame(){
   state.hasBot = players.some(p=>p.isBot);
   state.pointsTarget = room.pointsTarget || 501;
   state.gameOver = false;
-  state.settings = Object.assign({ allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet', openThreshold:71, scoringStyle:'value' }, room.settings||{});
+  state.settings = Object.assign({ allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet', openThreshold:71, scoringStyle:'flat10' }, room.settings||{});
   state.online = true;
   state.screen = 'GAME';
   const myIdx = players.findIndex(p=>p.uid===myUid);
@@ -627,7 +627,7 @@ function standaloneValue(card){
 
 /* ============================= STATE ============================= */
 let state = {};
-function newSetupState(){ return { screen:'SETUP', numPlayers:4, names:['Player 1','Player 2','Player 3','Player 4'], bots:[false,false,false,false], pointsTarget:501, settings:{ allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet', openThreshold:71, scoringStyle:'value' } }; }
+function newSetupState(){ return { screen:'SETUP', numPlayers:4, names:['Player 1','Player 2','Player 3','Player 4'], bots:[false,false,false,false], pointsTarget:501, settings:{ allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet', openThreshold:71, scoringStyle:'flat10' } }; }
 function newLandingState(){ return { screen:'LANDING' }; }
 state = newLandingState();
 
@@ -638,7 +638,7 @@ function startGame(numPlayers, names, bots, pointsTarget, settings){
   state = {
     screen:'GAME', players, dealerIndex:0, currentIndex:0, hasBot: players.some(p=>p.isBot), viewIndex, online:false,
     pointsTarget: (Number.isFinite(pointsTarget) && pointsTarget>0) ? pointsTarget : 501, gameOver:false,
-    settings: Object.assign({ allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet', openThreshold:71, scoringStyle:'value' }, settings||{}),
+    settings: Object.assign({ allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet', openThreshold:71, scoringStyle:'flat10' }, settings||{}),
     stock:[], discardPile:[], tournantePending:true, nextAfterDealer: 1 % numPlayers,
     table:[], requiredThreshold:71, allCardsById:{}, eliminatedPlayers:[],
     phase:'PASS', pendingAfterPass:'ARRANGE', discardWinAttempt:null, pendingJokerPlacement:null,
@@ -1665,7 +1665,7 @@ function renderLanding(){
       ${savedRoom ? `<button class="ghost" id="forgetRoom" style="font-size:12px;">Not that room — start fresh</button>` : ''}
     </div>
   </div>
-  <footer class="credits">Online play needs a free Firebase project wired in — see the README.</footer>`;
+  <footer class="credits">Author — Walid Gouza</footer>`;
 }
 function attachLandingHandlers(){
   document.getElementById('goLocal').onclick = ()=>{ state = newSetupState(); render(); };
@@ -1686,8 +1686,7 @@ function renderOnlineLobby(){
     return `
     <div class="header"><div class="eyebrow">Rami</div><h1>Online play isn't set up yet</h1></div>
     <div class="panel">
-      <p class="status-line">This copy of the game doesn't have a Firebase project wired in, so there's nowhere for it to sync with your friends' devices.</p>
-      <p class="status-line">Whoever's hosting the game needs to create a free Firebase project, enable Realtime Database, and paste the config into <code>firebaseConfig</code> near the top of the file's script. Full steps are in the README.</p>
+      <p class="status-line">Online play isn't available on this copy of the game right now.</p>
       <div class="btnrow"><button class="ghost" onclick="state=newLandingState(); render();">Back</button></div>
     </div>`;
   }
@@ -1733,7 +1732,7 @@ function renderOnlineWaiting(){
       ${controls}
     </div>`;
   }).join('');
-  const s = Object.assign({ allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet', openThreshold:71, scoringStyle:'value' }, room.settings||{});
+  const s = Object.assign({ allowDiscardDraw:false, handSize:14, useJokers:true, mode:'complet', openThreshold:71, scoringStyle:'flat10' }, room.settings||{});
   const settingsBlock = state.isHost ? `
     <div class="field"><label>Points target (first to reach it loses)</label><input type="number" id="mpPointsTarget" min="50" step="1" value="${room.pointsTarget||501}"></div>
     <div class="field">
@@ -1792,8 +1791,8 @@ function renderModeSettingsFields(s){
       <div class="field">
         <label>Leftover-hand scoring</label>
         <select id="scoringStyle">
-          <option value="value" ${(s.scoringStyle||'value')==='value'?'selected':''}>Card value per card (default)</option>
-          <option value="flat10" ${s.scoringStyle==='flat10'?'selected':''}>10 points per card</option>
+          <option value="flat10" ${(s.scoringStyle||'flat10')!=='value'?'selected':''}>10 points per card (default)</option>
+          <option value="value" ${s.scoringStyle==='value'?'selected':''}>Card value per card</option>
         </select>
       </div>
     </div>
@@ -1898,7 +1897,7 @@ function readSettingsFromDom(){
       handSize: 14,
       useJokers: useJokersEl ? useJokersEl.value==='yes' : true,
       openThreshold: openThresholdEl && parseInt(openThresholdEl.value,10)===51 ? 51 : 71,
-      scoringStyle: scoringStyleEl && scoringStyleEl.value==='flat10' ? 'flat10' : 'value',
+      scoringStyle: scoringStyleEl && scoringStyleEl.value==='value' ? 'value' : 'flat10',
     };
   }
   const allowDiscardEl = el('allowDiscardDraw');
@@ -1909,7 +1908,7 @@ function readSettingsFromDom(){
     handSize: handSizeEl && parseInt(handSizeEl.value,10)===13 ? 13 : 14,
     useJokers: useJokersEl ? useJokersEl.value==='yes' : true,
     openThreshold: 71,
-    scoringStyle: 'value',
+    scoringStyle: 'flat10',
   };
 }
 function attachSetupHandlers(){
