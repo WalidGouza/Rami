@@ -113,15 +113,20 @@
   .card.pickup{ box-shadow:0 0 0 2px var(--danger), 0 3px 8px rgba(0,0,0,0.35); }
 
   /* ---- scrollable table area, clears the fixed hand dock below ---- */
-  .scroll-content{ padding-bottom:200px; }
+  /* Must cover the dock's tallest possible state (meld row + fan + dock padding) or the fixed
+     dock overlaps and hides whatever's last in the scrollable content (e.g. the sort buttons). */
+  .scroll-content{ padding-bottom:340px; }
 
   /* ---- fixed hand dock: hand + its buttons always visible, never covering the table ---- */
   .hand-dock{
-    position:fixed; left:0; right:0; bottom:8px; max-width:1000px; margin:0 auto; z-index:60;
+    position:fixed; left:0; right:0; max-width:1000px; margin:0 auto; z-index:60;
     background:linear-gradient(180deg, rgba(7,54,50,0) 0%, var(--felt-dark) 22%, var(--felt-dark) 100%);
     border-top:1px solid rgba(201,162,75,0.35); box-shadow:0 -10px 24px rgba(0,0,0,0.45);
-    padding:8px 16px calc(40px + env(safe-area-inset-bottom, 0px));
+    padding:0 16px calc(40px + env(safe-area-inset-bottom, 0px));
   }
+  .drag-handle{ display:flex; justify-content:center; padding:8px 0 6px; cursor:grab; touch-action:none; user-select:none; }
+  .drag-handle:active{ cursor:grabbing; }
+  .drag-handle-bar{ width:44px; height:5px; border-radius:3px; background:rgba(201,162,75,0.55); }
 
   /* ---- fanned hand, foreground ---- */
   .hand-fan-wrap{ position:relative; margin:8px 0 4px; }
@@ -208,6 +213,37 @@ function unlockAudio(){
 }
 document.addEventListener('click', unlockAudio, { once:true });
 
+/* Drag the hand dock up or down to wherever's comfortable, via the small handle bar above it.
+   The offset is a plain JS variable (not game state), so it survives re-renders within this
+   session but doesn't need to sync anywhere or persist across reloads. */
+let handDockOffset = 14;
+let handDragState = null;
+function startHandDrag(ev){
+  const dock = ev.currentTarget.closest('.hand-dock');
+  if(!dock) return;
+  const clientY = ev.touches ? ev.touches[0].clientY : ev.clientY;
+  handDragState = { startY: clientY, startOffset: handDockOffset, dock, liveOffset: handDockOffset };
+  document.addEventListener('pointermove', onHandDragMove);
+  document.addEventListener('pointerup', endHandDrag);
+  document.addEventListener('pointercancel', endHandDrag);
+  ev.preventDefault();
+}
+function onHandDragMove(ev){
+  if(!handDragState) return;
+  const clientY = ev.touches ? ev.touches[0].clientY : ev.clientY;
+  const delta = handDragState.startY - clientY; // dragging up (finger moves up) lifts the dock
+  const next = Math.max(0, Math.min(360, handDragState.startOffset + delta));
+  handDragState.liveOffset = next;
+  handDragState.dock.style.bottom = next + 'px';
+}
+function endHandDrag(){
+  if(handDragState) handDockOffset = handDragState.liveOffset;
+  handDragState = null;
+  document.removeEventListener('pointermove', onHandDragMove);
+  document.removeEventListener('pointerup', endHandDrag);
+  document.removeEventListener('pointercancel', endHandDrag);
+}
+
 /* OS-level Notifications are the best channel for a backgrounded tab; this needs the player to
    opt in once (see the "Enable turn alerts" chip). */
 let notifPermissionRequested = false;
@@ -216,7 +252,27 @@ function notificationsEnabled(){ return notificationsSupported() && Notification
 function requestTurnNotifications(){
   if(!notificationsSupported()) return;
   notifPermissionRequested = true;
-  Notification.requestPermission().catch(()=>{}).then(()=>render());
+  try{
+    // Some browsers/webviews only support the old callback-style API and don't return a real
+    // Promise — calling .catch() on that return value throws, and without a try/catch that
+    // failure is completely silent (the button just looks broken). Handle both styles.
+    const result = Notification.requestPermission(function(){ paintUI(); });
+    if(result && typeof result.then==='function'){
+      result.then(()=>paintUI(), ()=>paintUI());
+    }
+  }catch(err){
+    console.error('Notification permission request failed:', err);
+    paintUI();
+  }
+}
+function sendTestAlert(){
+  try{
+    const n = new Notification('Rami', { body: 'Turn alerts are working.', tag:'rami-test' });
+    setTimeout(()=>n.close(), 4000);
+  }catch(err){
+    console.error('Test notification failed:', err);
+    alert('Could not show a notification: ' + err.message);
+  }
 }
 
 function playTurnAlert(){
@@ -1938,7 +1994,7 @@ function renderNotifChip(){
   if(!notificationsSupported()) return '';
   const perm = Notification.permission;
   if(perm==='granted'){
-    return `<div class="chip" style="opacity:.75;">🔔 Turn alerts on</div>`;
+    return `<button class="chip" style="opacity:.85; cursor:pointer; border:none;" onclick="sendTestAlert()">🔔 Turn alerts on — tap to test</button>`;
   }
   if(perm==='denied'){
     return `<div class="chip" style="opacity:.6;">🔕 Notifications blocked in browser settings</div>`;
@@ -2294,7 +2350,8 @@ function renderTable(){
       ${actionButtons}
     </div>
   </div>
-  <div class="hand-dock">
+  <div class="hand-dock" style="bottom:${handDockOffset}px;">
+    <div class="drag-handle" onpointerdown="startHandDrag(event)"><div class="drag-handle-bar"></div></div>
     ${meldChipsHTML ? `<div class="meld-row">${meldChipsHTML}</div>` : ''}
     <div class="hand-fan-wrap" ${canOrganize?`onclick="zoneClick('pool')"`:''}>
       <div class="hand-fan">${poolHTML || ''}</div>
