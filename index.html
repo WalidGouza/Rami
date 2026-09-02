@@ -211,7 +211,10 @@ function unlockAudio(){
     else if(audioCtx.state==='suspended') audioCtx.resume().catch(()=>{});
   }catch(e){ /* Web Audio unsupported — sound just won't play */ }
 }
-document.addEventListener('click', unlockAudio, { once:true });
+document.addEventListener('click', function onFirstGesture(){
+  unlockAudio();
+  if(alertsEnabled && notificationsSupported() && Notification.permission==='default') requestTurnNotifications();
+}, { once:true });
 
 /* Drag the hand dock up or down to wherever's comfortable, via the small handle bar above it.
    The offset is a plain JS variable (not game state), so it survives re-renders within this
@@ -244,18 +247,18 @@ function endHandDrag(){
   document.removeEventListener('pointercancel', endHandDrag);
 }
 
-/* OS-level Notifications are the best channel for a backgrounded tab; this needs the player to
-   opt in once (see the "Enable turn alerts" chip). */
-let notifPermissionRequested = false;
+/* OS-level Notifications are the best channel for a backgrounded tab; they need the browser's
+   permission, which we quietly ask for on the player's very first tap (a real user gesture, so
+   the browser allows it) rather than making them hunt for a separate button. */
+let alertsEnabled = true; // both sound and notification, on by default
 function notificationsSupported(){ return typeof Notification!=='undefined'; }
 function notificationsEnabled(){ return notificationsSupported() && Notification.permission==='granted'; }
 function requestTurnNotifications(){
   if(!notificationsSupported()) return;
-  notifPermissionRequested = true;
   try{
     // Some browsers/webviews only support the old callback-style API and don't return a real
     // Promise — calling .catch() on that return value throws, and without a try/catch that
-    // failure is completely silent (the button just looks broken). Handle both styles.
+    // failure is completely silent. Handle both styles.
     const result = Notification.requestPermission(function(){ paintUI(); });
     if(result && typeof result.then==='function'){
       result.then(()=>paintUI(), ()=>paintUI());
@@ -265,17 +268,16 @@ function requestTurnNotifications(){
     paintUI();
   }
 }
-function sendTestAlert(){
-  try{
-    const n = new Notification('Rami', { body: 'Turn alerts are working.', tag:'rami-test' });
-    setTimeout(()=>n.close(), 4000);
-  }catch(err){
-    console.error('Test notification failed:', err);
-    alert('Could not show a notification: ' + err.message);
+function toggleAlerts(){
+  alertsEnabled = !alertsEnabled;
+  if(alertsEnabled && notificationsSupported() && Notification.permission==='default'){
+    requestTurnNotifications();
   }
+  render();
 }
 
 function playTurnAlert(){
+  if(!alertsEnabled) return;
   try{
     unlockAudio();
     if(audioCtx){
@@ -1991,15 +1993,12 @@ function attachSetupHandlers(){
 }
 
 function renderNotifChip(){
-  if(!notificationsSupported()) return '';
-  const perm = Notification.permission;
-  if(perm==='granted'){
-    return `<button class="chip" style="opacity:.85; cursor:pointer; border:none;" onclick="sendTestAlert()">🔔 Turn alerts on — tap to test</button>`;
+  if(alertsEnabled){
+    const blocked = notificationsSupported() && Notification.permission==='denied';
+    const label = blocked ? '🔔 Turn alerts on (sound only — notifications blocked)' : '🔔 Turn alerts on';
+    return `<button class="chip" style="cursor:pointer; border:none;" onclick="toggleAlerts()">${label}</button>`;
   }
-  if(perm==='denied'){
-    return `<div class="chip" style="opacity:.6;">🔕 Notifications blocked in browser settings</div>`;
-  }
-  return `<button class="ghost" style="padding:6px 12px; font-size:12px; border-radius:20px;" onclick="requestTurnNotifications()">🔔 Enable turn alerts</button>`;
+  return `<button class="chip" style="cursor:pointer; border:none; opacity:.6;" onclick="toggleAlerts()">🔕 Turn alerts off</button>`;
 }
 function confirmQuit(){
   const msg = state.online
