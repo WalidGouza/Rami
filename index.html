@@ -297,9 +297,9 @@ function playTurnAlert(){
     }
   }catch(e){ console.error('Turn alert sound failed:', e); }
   try{
-    if(notificationsEnabled() && document.hidden){
-      const n = new Notification('Rami — your turn!', {
-        body: 'Come back and play your move.',
+    if(notificationsEnabled()){
+      const n = new Notification("It's your turn!", {
+        body: 'Rami — come back and play your move.',
         tag: 'rami-turn',
         renotify: true,
         silent: false,
