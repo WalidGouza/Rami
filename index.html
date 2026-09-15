@@ -454,9 +454,6 @@ function onRemoteGameUpdate(remoteGame){
   normalizeGameState();
   const idx = state.players ? state.players.findIndex(p=>p.uid===myUid) : -1;
   if(idx>-1) state.mySeatIndex = idx;
-  state.selectedCardIds = new Set();
-  state.multiSelectMode = false;
-  state.errorMsg = null;
   paintUI();
 }
 
@@ -771,6 +768,14 @@ function viewedPlayer(){
   if(state.hasBot) return state.players[state.viewIndex];
   return currentPlayer();
 }
+/* Same as viewedPlayer(), but the index — used to check whether a turn transition belongs to the
+   person actually looking at this screen (so purely local UI state, like a card selection, is
+   only cleared when it's genuinely stale, not whenever some other player's/bot's turn ends). */
+function viewedIndex(){
+  if(state.online) return state.mySeatIndex;
+  if(state.hasBot) return state.viewIndex;
+  return state.currentIndex;
+}
 function removeFromArrangement(arr, id){
   let idx = arr.pool.indexOf(id);
   if(idx>-1){ arr.pool.splice(idx,1); return; }
@@ -811,7 +816,7 @@ function doStockDraw(){
   player.hand.push(card);
   player.arrangement.pool.push(card.id);
   if(state.tournantePending) state.tournantePending=false;
-  state.phase='ARRANGE'; state.selectedCardIds=new Set(); state.multiSelectMode=false; state.errorMsg=null;
+  state.phase='ARRANGE'; if(state.currentIndex===viewedIndex()){ state.selectedCardIds=new Set(); state.multiSelectMode=false; } state.errorMsg=null;
   render();
 }
 function drawTournante(){
@@ -825,7 +830,7 @@ function doTournanteDraw(){
   player.hand.push(card);
   player.arrangement.pool.push(card.id);
   state.tournantePending=false;
-  state.phase='ARRANGE'; state.selectedCardIds=new Set(); state.multiSelectMode=false; state.errorMsg=null;
+  state.phase='ARRANGE'; if(state.currentIndex===viewedIndex()){ state.selectedCardIds=new Set(); state.multiSelectMode=false; } state.errorMsg=null;
   render();
 }
 /* "Allow drawing from discard" setting ON: draw from discard freely, any turn, like drawing from stock */
@@ -841,7 +846,7 @@ function doDiscardFreeDraw(){
   player.hand.push(card);
   player.arrangement.pool.push(card.id);
   state.tournantePending=false;
-  state.phase='ARRANGE'; state.selectedCardIds=new Set(); state.multiSelectMode=false; state.errorMsg=null;
+  state.phase='ARRANGE'; if(state.currentIndex===viewedIndex()){ state.selectedCardIds=new Set(); state.multiSelectMode=false; } state.errorMsg=null;
   render();
 }
 /* "Allow drawing from discard" setting OFF (default): pick up the discard pile specifically to
@@ -871,7 +876,7 @@ function attemptDiscardWinDraw(){
   player.hand.push(card);
   player.arrangement.pool.push(card.id);
   state.discardWinAttempt = card.id;
-  state.phase='ARRANGE'; state.selectedCardIds=new Set(); state.multiSelectMode=false; state.errorMsg=null;
+  state.phase='ARRANGE'; if(state.currentIndex===viewedIndex()){ state.selectedCardIds=new Set(); state.multiSelectMode=false; } state.errorMsg=null;
   render();
 }
 function returnDiscardCard(){
@@ -892,13 +897,15 @@ function returnDiscardCard(){
   const [card] = player.hand.splice(idx,1); state.discardPile.push(card);
   player.arrangement.groups = player.arrangement.groups.filter(g=>g.length>0);
   state.discardWinAttempt = null;
-  state.phase='DRAW'; state.selectedCardIds=new Set(); state.multiSelectMode=false; state.errorMsg=null;
+  state.phase='DRAW'; if(state.currentIndex===viewedIndex()){ state.selectedCardIds=new Set(); state.multiSelectMode=false; } state.errorMsg=null;
   render();
 }
 
 function advanceTurn(){
+  const wasMyTurn = state.currentIndex === viewedIndex();
   state.currentIndex = (state.currentIndex+1)%state.players.length;
-  state.selectedCardIds=new Set(); state.multiSelectMode=false; state.errorMsg=null; state.discardWinAttempt=null; state.pendingJokerPlacement=null;
+  if(wasMyTurn){ state.selectedCardIds=new Set(); state.multiSelectMode=false; }
+  state.errorMsg=null; state.discardWinAttempt=null; state.pendingJokerPlacement=null;
   state.phase='PASS'; state.pendingAfterPass='DRAW';
   render();
 }
