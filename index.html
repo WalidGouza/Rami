@@ -1856,7 +1856,7 @@ function renderModeSettingsFields(s){
       <div class="field">
         <label>Leftover-hand scoring</label>
         <select id="scoringStyle">
-          <option value="flat10" ${(s.scoringStyle||'flat10')!=='value'?'selected':''}>10 points per card (default)</option>
+          <option value="flat10" ${(s.scoringStyle||'flat10')==='flat10'?'selected':''}>10 points per card (default)</option>
           <option value="value" ${s.scoringStyle==='value'?'selected':''}>Card value per card</option>
         </select>
       </div>
